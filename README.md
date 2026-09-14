@@ -957,18 +957,6 @@ inside the browser. Every calculation happens on the visitor's machine, and no
 demand profile, site or result is uploaded anywhere, because there is nowhere
 to upload it to.
 
-Two differences from the local version:
-
-- **Resource retrieval still needs the internet**, and some providers do not
-  send the CORS headers a browser requires, so an online fetch can fail in the
-  browser while working perfectly from the local server. The *Monthly
-  averages* mode always works — which is why every worked example uses it.
-- **Long studies are slower.** Pyodide runs at roughly a third to a half of
-  native speed.
-
-[`PUBLISH.md`](PUBLISH.md) has the steps for publishing your own copy to
-GitHub Pages.
-
 ---
 
 ## Limits worth knowing
