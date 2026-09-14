@@ -1,0 +1,16 @@
+# HES requirements
+#
+# There are none that matter. The calculation engine, the hourly dispatch,
+# the optimisers, the web server, the charts and the report generator use
+# only the Python standard library, so `python server.py` works on a clean
+# install of Python 3.9 or newer with nothing fetched at all.
+#
+# The two entries below are optional and the software says so when they are
+# missing rather than failing:
+#
+#   numpy      makes the array work faster on large studies. The results are
+#              identical without it.
+#   pywebview  provides the native desktop window used by desktop.py. Without
+#              it the desktop launcher opens your browser instead.
+numpy>=1.21 ; extra == "fast"
+pywebview>=4.0 ; extra == "desktop"
