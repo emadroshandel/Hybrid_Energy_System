@@ -48,7 +48,6 @@ entirely client-side in a browser through Pyodide.
 - **[Part 3 — A worked example, end to end](#part-3--a-worked-example-end-to-end)**
 - **[Part 4 — Under the hood](#part-4--under-the-hood)** — layout, API, extending it
 - [Relationship to the MATLAB study](#relationship-to-the-matlab-study)
-- [The tutorial](#the-tutorial)
 - [Validation and tests](#validation-and-tests)
 - [Running it online](#running-it-online)
 - [Limits worth knowing](#limits-worth-knowing)
@@ -730,7 +729,6 @@ ensys/                  the engine, standard library only
   sizing/               inverter, cables, protection, voltage, design
   diagram/              symbols, sheet, topology, sld
 web/                    interface: index.html, app.js, boot.js, charts.js
-docs/                   the tutorial (.docx and .pdf), the sizing review
 docs/images/            the figures in this README
 examples/               three loadable worked projects
 tests/                  207 regression tests
@@ -884,31 +882,6 @@ around it:
    real one for grid costs in the same COE; `AEB = 79090.5` is a hardcoded
    baseline driving payback; and the IRR cash flow `[-capx, -Gridx'+opex']`
    adds O&M as a positive return, so that IRR is not meaningful.
-
----
-
-## The tutorial
-
-[`docs/HES_Tutorial.pdf`](docs/HES_Tutorial.pdf) — and the same thing
-as [`.docx`](docs/HES_Tutorial.docx) — is a 43-page treatment of the whole
-subject and the whole program: 69 numbered equations, every model in the chain
-derived rather than asserted, and two complete studies worked end to end with
-screenshots of each step. It covers the solar geometry, the Erbs decomposition
-and the Hay–Davies transposition, the Faiman cell temperature, wind shear and
-the air-density correction, the storage state-of-charge and ageing models, the
-diesel fuel curve and the minimum load ratio, the two-state Markov outage
-model, the present-worth economics, every performance indicator, and the
-multi-objective search — including why the reliability and renewable objectives
-saturate and what that does to a naive "most reliable" selector.
-
-The two studies in it are the same ones that ship in
-[`examples/`](examples/), so the document and the software can be read
-together.
-
-[`docs/SIZING_REVIEW.md`](docs/SIZING_REVIEW.md) is the engineering review that
-preceded the current version: every defect found in the sizing chain, what it
-did to the answer, and how it was fixed. It is worth reading if you want to
-know what this program used to get wrong.
 
 ---
 
