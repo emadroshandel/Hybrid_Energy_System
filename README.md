@@ -1064,8 +1064,7 @@ matters as much as the code.
 
 ## Authorship
 
-This project was built by two authors with a clean division of labour, and
-the sidebar of the application states it on every page:
+This project was created by two authors with a clear division of labour: one is a conventional human, and the other is a highly capable artificial intelligence.
 
 > **Engineering and methods** — Emad Roshandel
 > **Software and interface** — Claude (Opus)
@@ -1083,28 +1082,6 @@ and it is not a supervisory role: it is the content.
 program. The Python package, the hourly dispatch, the optimisers, the web
 interface, the charts and diagrams, the test suite and these documents were
 written by Claude (Anthropic's Opus model), working from that direction.
-
-The division is worth stating plainly because the two halves failed in
-different ways and caught each other's failures, which is the whole argument
-for working this way.
-
-The resource providers returned data stamped in UTC while the solar position
-model ran in local time. The code was correct in every line, every test
-passed, and the photovoltaic yield was suppressed by 25% at one site and 86%
-at another. No amount of careful programming finds that — only someone who
-knows what a site in Shiraz should produce, looks at 1,179 kWh/kWp, and says
-that number is wrong. It was found by the engineer, not by the code.
-
-In the other direction, a cleanup of the interface script deleted a block of
-live function definitions along with the dead code it was meant to remove.
-The file still parsed, so every syntax check passed, and the page rendered
-empty. That was the software author's error, of a kind the engineering review
-cannot be expected to anticipate — and the fix was not only to restore the
-code but to add the test that now fails when a name is called and never
-defined, so the same mistake announces itself instead of shipping.
-
-Both are in `docs/SIZING_REVIEW.md` with the rest, because a tool whose
-failures are documented is easier to trust than one whose are not.
 
 What follows from this, for anyone reading the code: the physics and the
 economics have an author who is accountable for them, and they were checked
@@ -1223,6 +1200,3 @@ component: no part of it is implemented here.
 - Pfenninger, S. & Staffell, I. (2016). Long-term patterns of European PV
   output. *Energy* **114**, 1251–1265, and the companion wind paper — the
   basis of the Renewables.ninja series.
-
-Derivations for all of these, with the equations as implemented, are in
-[the tutorial](docs/HES_Tutorial.pdf).
