@@ -22,16 +22,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out the repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
+      # enablement: true turns Pages on from here if it is not already on.
+      # Without it this step fails with "Get Pages site failed ... Not Found"
+      # until somebody sets Settings -> Pages -> Source to GitHub Actions by
+      # hand, which is a poor first experience for anyone who forks this.
       - name: Configure Pages
-        uses: actions/configure-pages@v5
+        uses: actions/configure-pages@v6
+        with:
+          enablement: true
 
       - name: Upload the site
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v5
         with:
           path: .          # index.html, web/, ensys/, docs/, examples/
 
       - name: Deploy
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
