@@ -1,0 +1,133 @@
+{
+  "application": "HES",
+  "version": 2,
+  "title": "Grid-connected commercial building with photovoltaics and storage",
+  "location": {
+    "name": "Shiraz, Iran — commercial",
+    "latitude": 29.6122,
+    "longitude": 52.5174,
+    "elevation_m": 1500,
+    "utc_offset_hours": 3.5,
+    "terrain": "suburban"
+  },
+  "site_scale": "commercial",
+  "resources": {
+    "mode": "offline",
+    "provider": "pvgis_tmy",
+    "year": 2020,
+    "monthly_ghi": "150, 160, 185, 195, 215, 230, 225, 210, 190, 170, 150, 140",
+    "monthly_temperature": "7, 10, 14, 20, 25, 31, 33, 32, 28, 21, 14, 9",
+    "mean_wind_speed": 3.5
+  },
+  "load": {
+    "mode": "synthetic",
+    "scale": 1,
+    "column": "",
+    "text": "",
+    "synthetic": {
+      "peak_kw": 100,
+      "load_factor": 0.45,
+      "shape": "commercial"
+    }
+  },
+  "costs": {
+    "region": "iran",
+    "currency": "USD",
+    "level": "typical"
+  },
+  "components": {
+    "pv": {
+      "enabled": true,
+      "unit_kwp": 10,
+      "tilt_deg": null,
+      "azimuth_deg": 180,
+      "system_losses": 0.14,
+      "tracking": "fixed",
+      "capital_cost": 7000,
+      "replacement_cost": 6000,
+      "om_cost_per_year": 88
+    },
+    "wind": {
+      "enabled": false,
+      "preset": null,
+      "rated_kw": 50,
+      "hub_height_m": 30,
+      "reference_height_m": 10,
+      "v_cutin": 3,
+      "v_rated": 12,
+      "v_cutout": 25,
+      "capital_cost": 90000,
+      "replacement_cost": 75000,
+      "om_cost_per_year": 2000
+    },
+    "genset": {
+      "enabled": false,
+      "rated_kw": 100,
+      "min_load_ratio": 0.3,
+      "fuel_curve": "diesel_medium",
+      "fuel_price": 1,
+      "om_cost_per_hour": 1.5,
+      "capital_cost": 30000,
+      "replacement_cost": 28000
+    },
+    "battery": {
+      "enabled": true,
+      "unit_kwh": 25,
+      "unit_kw": 12.5,
+      "chemistry": "lithium_lfp",
+      "soc_initial": 0.5,
+      "capital_cost": 6250,
+      "replacement_cost": 5000,
+      "om_cost_per_year": 62.5
+    },
+    "ev_fleet": {
+      "enabled": false,
+      "archetype": "residential",
+      "scenario": "v1g_smart",
+      "chargers": 6,
+      "charger_kw": 7.4,
+      "battery_kwh": 60,
+      "vehicles_per_point": 1,
+      "soc_departure_target": 0.8,
+      "degradation_cost_per_kwh": 0.03,
+      "capital_cost": 0,
+      "replacement_cost": 0,
+      "om_cost_per_year": 0
+    },
+    "grid": {
+      "enabled": true,
+      "import_limit_kw": 150,
+      "export_limit_kw": 50,
+      "import_price": 0.09,
+      "export_price": 0.03,
+      "demand_charge": 0,
+      "standing_charge": 0,
+      "emission_factor": 0.4,
+      "availability": 1,
+      "mean_outage_hours": 4
+    }
+  },
+  "economics": {
+    "project_years": 20,
+    "interest_rate": 0.08,
+    "escalation_rate": 0.02,
+    "currency": "USD",
+    "load_growth_rate": 0,
+    "unmet_load_penalty": 0,
+    "emissions_price": 0
+  },
+  "study": {
+    "objectives": [
+      "npc",
+      "lpsp",
+      "renewable_fraction"
+    ],
+    "max_lpsp": 0.02,
+    "min_renewable_fraction": 0,
+    "strategy": "load_following",
+    "algorithm": "mopso",
+    "particles": 24,
+    "iterations": 40,
+    "seed": 1234
+  }
+}
