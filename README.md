@@ -26,8 +26,7 @@ in [Authorship](#authorship).*
 
 Python 3.9+, **standard library only**. No installation, no dependencies, no
 build step. It runs as a desktop window, a local server, over your network, or
-entirely client-side in a browser through Pyodide. Built to the same
-constraints as [Earthing_System](https://github.com/emadroshandel/Earthing_System).
+entirely client-side in a browser through Pyodide. 
 
 ---
 
