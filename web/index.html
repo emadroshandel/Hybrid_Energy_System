@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EnerSys — Hybrid Energy System Sizing</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- The interface is present from the first paint and is never hidden behind
+     a loading screen. Whatever the engine is doing, the user has something
+     on screen they can look at, and a failure to reach it is reported in
+     the banner below rather than by a spinner that turns for ever.
+
+     boot.js creates a splash overlay only in the one case that genuinely
+     needs one: downloading the Python runtime for browser mode. -->
+
+<div id="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <span class="brand-mark">⚡</span>
+      <div>
+        <div class="brand-name">EnerSys</div>
+        <div class="brand-sub">Hybrid system sizing</div>
+      </div>
+    </div>
+    <nav id="nav"></nav>
+    <div class="sidebar-foot">
+      <div class="credits">
+        <div><span>Engineering and methods</span><b>Emad Roshandel</b></div>
+        <div><span>Software and interface</span><b>Claude (Opus)</b></div>
+      </div>
+      <div class="foot-row">
+        <div id="engine-badge" class="badge"></div>
+        <button id="theme-toggle" class="linkish" type="button">Theme</button>
+      </div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <div>
+        <h1 id="page-title">Site</h1>
+        <p id="page-sub" class="muted"></p>
+      </div>
+      <div class="topbar-actions">
+        <label class="btn ghost" for="project-open"
+               title="Open a saved project file, or one of the worked examples in the examples folder">Open project</label>
+        <input id="project-open" type="file" accept=".json,application/json" hidden>
+        <button id="btn-prev" class="btn ghost" type="button">Back</button>
+        <button id="btn-next" class="btn primary" type="button">Next</button>
+      </div>
+    </header>
+
+    <!-- Engine status. Empty and invisible while all is well; carries the
+         explanation, and the diagnostics, when it is not. -->
+    <div id="engine-banner" hidden>
+      <p id="engine-banner-msg"></p>
+      <p id="engine-banner-hint" class="muted"></p>
+      <details id="engine-banner-more">
+        <summary>Technical detail</summary>
+        <pre id="engine-banner-detail"></pre>
+      </details>
+      <div class="banner-actions">
+        <button type="button" id="engine-retry" class="btn ghost">Try again</button>
+        <button type="button" id="engine-copy" class="btn ghost">Copy diagnostics</button>
+      </div>
+    </div>
+
+    <div id="pages">
+
+      <!-- ============================ 1. SITE ============================ -->
+      <section class="page" data-page="site">
+        <div class="grid-2">
+          <div class="card">
+            <h2>Location</h2>
+            <p class="help">The site coordinates drive every resource lookup,
+              the solar geometry and the air density used for wind.</p>
+
+            <label class="field">
+              <span>Preset <i class="q" data-help="Reference sites, including the Shiraz location used in the original study.">?</i></span>
+              <select id="loc-preset"><option value="">Custom…</option></select>
+            </label>
+
+            <div class="row-2">
+              <label class="field"><span>Latitude (°N)</span>
+                <input id="lat" type="number" step="0.0001" value="29.6122"></label>
+              <label class="field"><span>Longitude (°E)</span>
+                <input id="lon" type="number" step="0.0001" value="52.5174"></label>
+            </div>
+            <div class="row-2">
+              <label class="field"><span>Elevation (m)
+                <i class="q" data-help="Sets air density. At 1500 m the air is 13% thinner, and a wind turbine produces proportionally less.">?</i></span>
+                <input id="elev" type="number" step="1" value="1500"></label>
+              <label class="field"><span>UTC offset (h)
+                <i class="q" data-help="Needed for solar position. Getting it wrong shifts the PV output by up to an hour.">?</i></span>
+                <input id="tz" type="number" step="0.5" value="3.5"></label>
+            </div>
+            <div class="row-2">
+              <label class="field"><span>Site name</span>
+                <input id="site-name" type="text" value="Shiraz, Iran"></label>
+              <label class="field"><span>Terrain
+                <i class="q" data-help="Sets the wind shear exponent used to translate measured wind speed to hub height.">?</i></span>
+                <select id="terrain"></select></label>
+            </div>
+          </div>
+
+          <div class="card">
+            <h2>Resource data</h2>
+            <p class="help">Fetch from an online atlas, or work entirely
+              offline from twelve monthly averages.</p>
+
+            <div class="seg" id="res-mode">
+              <button class="seg-btn active" data-mode="online">Online providers</button>
+              <button class="seg-btn" data-mode="offline">Offline (monthly)</button>
+            </div>
+
+            <div id="res-online">
+              <label class="field"><span>Preferred source</span>
+                <select id="res-provider">
+                  <option value="pvgis_tmy">PVGIS TMY — typical year (recommended)</option>
+                  <option value="pvgis_hourly">PVGIS — a specific year</option>
+                  <option value="open_meteo">Open-Meteo — ERA5 reanalysis</option>
+                  <option value="nasa_power">NASA POWER — MERRA-2</option>
+                </select></label>
+              <label class="field"><span>Year (for non-TMY sources)</span>
+                <input id="res-year" type="number" value="2020" min="1990" max="2024"></label>
+            </div>
+
+            <div id="res-offline" hidden>
+              <label class="field"><span>Monthly GHI, kWh/m² — 12 values
+                <i class="q" data-help="Read these from the Global Solar Atlas page for your site, or from a local met station.">?</i></span>
+                <input id="monthly-ghi" type="text" placeholder="150, 160, 185, 195, 215, 230, 225, 210, 190, 170, 150, 140"></label>
+              <label class="field"><span>Monthly mean temperature, °C</span>
+                <input id="monthly-temp" type="text" placeholder="7, 10, 14, 20, 25, 31, 33, 32, 28, 21, 14, 9"></label>
+              <label class="field"><span>Mean wind speed, m/s</span>
+                <input id="mean-wind" type="number" step="0.1" value="3.5"></label>
+            </div>
+
+            <button id="btn-fetch" class="btn primary wide" type="button">Get resource data</button>
+            <div id="res-status" class="status"></div>
+            <div id="res-findings" class="findings" hidden></div>
+          </div>
+        </div>
+        <div id="res-charts" class="card" hidden>
+          <h2>Resource summary</h2>
+          <div class="chart-row"><div id="chart-ghi"></div><div id="chart-temp"></div></div>
+          <div id="res-provenance" class="provenance"></div>
+        </div>
+      </section>
+
+      <!-- ============================ 2. LOAD ============================ -->
+      <section class="page" data-page="load" hidden>
+        <div class="card">
+          <h2>Site scale</h2>
+          <p class="help">Start here. The optimiser buys whole units, so the
+            size of a PV block or a battery module decides what answers it can
+            express at all — a 25 kWp block cannot describe a house. Choosing
+            a scale moves the demand, the unit sizes, the grid connection and
+            every per-unit cost together. Everything stays editable
+            afterwards.</p>
+          <div class="seg" id="site-scale">
+            <button class="seg-btn" data-scale="house" type="button">House</button>
+            <button class="seg-btn" data-scale="commercial" type="button">Small commercial</button>
+            <button class="seg-btn" data-scale="industrial" type="button">Industrial</button>
+          </div>
+          <div id="scale-status" class="status"></div>
+        </div>
+
+        <div class="card">
+          <h2>Load profile</h2>
+          <p class="help">An hourly demand series for one year. Paste CSV,
+            upload a file, or use one of the built-in shapes. The engine
+            accepts 8760 hourly values, 365 daily, or 12 monthly — anything
+            shorter is expanded and the expansion is reported.
+            <strong>Every value is read as kilowatts.</strong> A file in watts
+            needs a scale factor of 0.001; nothing in the data reveals which
+            it is.</p>
+
+          <div class="seg" id="load-mode">
+            <button class="seg-btn active" data-mode="file">Upload a file</button>
+            <button class="seg-btn" data-mode="paste">Paste CSV</button>
+            <button class="seg-btn" data-mode="synthetic">Build a profile</button>
+          </div>
+
+          <div id="load-file">
+            <input id="load-upload" type="file" accept=".csv,.txt">
+            <label class="field"><span>Column name (optional)
+              <i class="q" data-help="If left blank, the first numeric column is used.">?</i></span>
+              <input id="load-column" type="text" placeholder="e.g. Electricity:Facility [kW](Hourly)"></label>
+          </div>
+
+          <div id="load-paste" hidden>
+            <textarea id="load-text" rows="7" placeholder="One value per line, or CSV with a header row"></textarea>
+          </div>
+
+          <div id="load-synthetic" hidden>
+            <div class="row-3">
+              <label class="field"><span>Peak demand (kW)</span>
+                <input id="syn-peak" type="number" value="300"></label>
+              <label class="field"><span>Load factor
+                <i class="q" data-help="Average divided by peak. Offices run 0.3-0.4; continuous process plant 0.7-0.9.">?</i></span>
+                <input id="syn-lf" type="number" step="0.05" value="0.45"></label>
+              <label class="field"><span>Profile shape</span>
+                <select id="syn-shape">
+                  <option value="commercial">Commercial — daytime peak</option>
+                  <option value="residential">Residential — evening peak</option>
+                  <option value="industrial">Industrial — flat, 2-shift</option>
+                  <option value="continuous">Continuous — near flat</option>
+                </select></label>
+            </div>
+          </div>
+
+          <div class="row-2">
+            <label class="field"><span>Scale factor
+              <i class="q" data-help="Multiply every value. Use it to rescale a template profile to your site's peak.">?</i></span>
+              <input id="load-scale" type="number" step="0.01" value="1"></label>
+            <div class="field"><span>&nbsp;</span>
+              <button id="btn-load" class="btn primary wide" type="button">Load profile</button></div>
+          </div>
+          <div id="load-status" class="status"></div>
+          <div id="load-findings" class="findings" hidden></div>
+        </div>
+
+        <div id="load-charts" class="card" hidden>
+          <h2>Demand characteristics</h2>
+          <div id="load-kpis" class="kpis"></div>
+          <div class="chart-row"><div id="chart-load-month"></div><div id="chart-load-day"></div></div>
+        </div>
+
+        <div class="card">
+          <h2>Wind speed series <span class="tag">optional</span></h2>
+          <p class="help">Only needed if the online source has no wind data,
+            or you have measured data for the site. Renewables.ninja and
+            met-station exports both work.</p>
+          <input id="wind-upload" type="file" accept=".csv,.txt">
+          <div class="row-2">
+            <label class="field"><span>Column name</span>
+              <input id="wind-column" type="text" value="wind_speed"></label>
+            <label class="field"><span>Measurement height (m)</span>
+              <input id="wind-height" type="number" value="80"></label>
+          </div>
+          <button id="btn-wind" class="btn wide" type="button">Load wind data</button>
+          <div id="wind-status" class="status"></div>
+        </div>
+      </section>
+
+      <!-- ========================= 3. COMPONENTS ========================= -->
+      <section class="page" data-page="components" hidden>
+        <p class="help lead">Define one <em>unit</em> of each technology and
+          its cost. The optimiser decides how many of each to build — sizing
+          in whole units because that is how equipment is actually bought.</p>
+
+        <div class="card">
+          <h2>Cost basis</h2>
+          <p class="help">Every cost below can be overwritten with your own
+            quote. Any cost left at <strong>zero</strong> is filled from the
+            regional library instead, so you only need to enter the figures
+            you actually have.</p>
+          <div class="row-3">
+            <label class="field"><span>Region
+              <i class="q" data-help="Sets the benchmark capital, replacement and O&amp;M costs used for anything you leave at zero.">?</i></span>
+              <select id="cost-region"></select></label>
+            <label class="field"><span>Currency</span>
+              <select id="cost-currency"></select></label>
+            <label class="field"><span>Cost level
+              <i class="q" data-help="Where in the observed range to take the benchmark: low, typical or high.">?</i></span>
+              <select id="cost-level">
+                <option value="low">Low</option>
+                <option value="typical" selected>Typical</option>
+                <option value="high">High</option>
+              </select></label>
+          </div>
+          <div id="cost-status" class="status"></div>
+        </div>
+
+        <div id="components"></div>
+
+        <div class="card">
+          <h2>More technologies</h2>
+          <p class="help">The engine models these too — each has a cost
+            entry, a dispatch model and a diagram symbol. Enable any of them
+            and the optimiser will size it alongside the rest.</p>
+          <button id="btn-more-tech" class="btn wide" type="button">Show all technologies</button>
+        </div>
+        <div id="components-extra" hidden></div>
+      </section>
+
+      <!-- ========================= 4. ECONOMICS ========================== -->
+      <section class="page" data-page="economics" hidden>
+        <div class="grid-2">
+          <div class="card">
+            <h2>Financial parameters</h2>
+            <div class="row-2">
+              <label class="field"><span>Project life (years)</span>
+                <input id="proj-years" type="number" value="20"></label>
+              <label class="field"><span>Currency</span>
+                <input id="currency" type="text" value="USD"></label>
+            </div>
+            <div class="row-2">
+              <label class="field"><span>Discount rate
+                <i class="q" data-help="Nominal rate. If you enter a real rate, set escalation to zero — mixing the two is worth about 20% on a 20-year NPC.">?</i></span>
+                <input id="interest" type="number" step="0.005" value="0.08"></label>
+              <label class="field"><span>Energy price escalation</span>
+                <input id="escalation" type="number" step="0.005" value="0.02"></label>
+            </div>
+            <div class="row-2">
+              <label class="field"><span>Unmet load penalty (per kWh)
+                <i class="q" data-help="Cost of energy not served. Set it where reliability has a real business value.">?</i></span>
+                <input id="unmet-penalty" type="number" step="0.1" value="0"></label>
+              <label class="field"><span>Carbon price (per tonne)</span>
+                <input id="carbon-price" type="number" step="1" value="0"></label>
+            </div>
+            <div class="row-2">
+              <label class="field"><span>Annual load growth
+                <i class="q" data-help="Demand growth per year over the project life. Zero assumes the site consumes exactly the same energy in year twenty as in year one. Combined with PV degradation this is what decides whether the design still meets the load at the end of its life, which is checked and reported separately.">?</i></span>
+                <input id="load-growth" type="number" step="0.005" value="0"></label>
+              <div class="field"><span>&nbsp;</span></div>
+            </div>
+          </div>
+
+          <div class="card">
+            <h2>Objectives and limits</h2>
+            <p class="help">The optimiser returns a Pareto front across the
+              objectives you choose, subject to the constraints.</p>
+            <div id="objectives" class="checks"></div>
+            <h3>Constraints</h3>
+            <div class="row-2">
+              <label class="field"><span>Max LPSP
+                <i class="q" data-help="Loss of power supply probability: the share of demand left unserved. 0.02 means 2% of annual energy.">?</i></span>
+                <input id="max-lpsp" type="number" step="0.01" value="0.02"></label>
+              <label class="field"><span>Min renewable fraction</span>
+                <input id="min-rf" type="number" step="0.05" value="0"></label>
+            </div>
+            <label class="field"><span>Dispatch strategy</span>
+              <select id="strategy"></select></label>
+          </div>
+        </div>
+      </section>
+
+      <!-- ========================== 5. OPTIMISE ========================== -->
+      <section class="page" data-page="optimise" hidden>
+        <div class="card">
+          <h2>Run the sizing study</h2>
+          <label class="field"><span>Search algorithm
+            <i class="q" data-help="All three evaluate designs identically — they differ only in how they explore. Running a second one over the same problem is the cheapest way to check that a front has really converged.">?</i></span>
+            <select id="algorithm"></select></label>
+          <p id="algorithm-note" class="help"></p>
+          <div class="row-3">
+            <label class="field"><span id="particles-label">Swarm size</span>
+              <input id="particles" type="number" value="24"></label>
+            <label class="field"><span>Iterations</span>
+              <input id="iterations" type="number" value="40"></label>
+            <label class="field"><span>Random seed
+              <i class="q" data-help="Fixing the seed makes the study reproducible. A result nobody can reproduce cannot be defended.">?</i></span>
+              <input id="seed" type="number" value="1234"></label>
+          </div>
+          <button id="btn-run" class="btn primary wide big" type="button">Run study</button>
+          <div id="run-progress" class="progress" hidden>
+            <div class="bar"><div id="run-bar"></div></div>
+            <div id="run-msg" class="muted"></div>
+          </div>
+          <div id="run-status" class="status"></div>
+          <div id="run-findings" class="findings" hidden></div>
+        </div>
+
+        <div id="front-card" class="card" hidden>
+          <h2>Pareto front</h2>
+          <p class="help">Each point is a design that cannot be improved on
+            one objective without sacrificing another. Click one to see it
+            in detail.</p>
+          <div id="chart-front"></div>
+          <div id="highlights" class="highlights"></div>
+          <div class="table-wrap"><table id="front-table"></table></div>
+        </div>
+      </section>
+
+      <!-- =========================== 6. RESULTS ========================== -->
+      <section class="page" data-page="results" hidden>
+        <div id="results-body"><p class="muted">Run a study and select a design first.</p></div>
+      </section>
+
+      <!-- =========================== 7. DESIGN =========================== -->
+      <section class="page" data-page="design" hidden>
+        <div id="design-body"><p class="muted">Run a study and select a design first.</p></div>
+      </section>
+
+      <!-- ========================== 8. DIAGRAMS ========================== -->
+      <section class="page" data-page="diagrams" hidden>
+        <div id="diagram-body"><p class="muted">Run a study and select a design first.</p></div>
+      </section>
+
+      <!-- =========================== 9. REPORT =========================== -->
+      <section class="page" data-page="report" hidden>
+        <div class="card">
+          <h2>Export</h2>
+          <p class="help">A self-contained HTML report with every input,
+            result, schedule and diagram. It opens in any browser and prints
+            to PDF.</p>
+          <div class="row-2">
+            <label class="field"><span>Report language</span>
+              <select id="report-lang">
+                <option value="en">English</option>
+                <option value="fa">فارسی (RTL)</option>
+              </select></label>
+            <label class="field"><span>Project title</span>
+              <input id="report-title" type="text" value="Hybrid energy system study"></label>
+          </div>
+          <div class="btn-row">
+            <button id="btn-report" class="btn primary" type="button">Generate report</button>
+            <button id="btn-svg" class="btn" type="button">Download diagrams (SVG)</button>
+            <button id="btn-csv" class="btn" type="button">Download hourly results (CSV)</button>
+            <button id="btn-json" class="btn ghost" type="button">Save project (JSON)</button>
+          </div>
+          <div id="report-status" class="status"></div>
+        </div>
+      </section>
+
+    </div>
+  </main>
+</div>
+
+<div id="tip" class="tip" hidden></div>
+<!-- boot.js first: it defines window.ENSYS, which app.js uses as soon as
+     it is parsed. app.js starts itself; nothing waits on the engine before
+     the interface is on screen. -->
+<script src="boot.js"></script>
+<script src="charts.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
