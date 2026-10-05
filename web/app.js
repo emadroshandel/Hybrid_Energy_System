@@ -1,4 +1,4 @@
-/* EnerSys application logic.
+/* HES application logic.
  *
  * Transport-agnostic: every call goes through window.ENSYS.call(action,
  * payload), which boot.js binds either to the HTTP server or to Pyodide.
@@ -97,7 +97,7 @@ const App = (() => {
         'The calculation engine could not be started.',
         'The interface is usable, but nothing can be calculated until the '
         + 'engine is reachable. Run "python server.py" from the project '
-        + 'folder — or, on Windows, double-click START_EnerSys.bat — and '
+        + 'folder — or, on Windows, double-click START_HES.bat — and '
         + 'reload this page.',
         (e && e.message) || String(e));
     }
@@ -178,6 +178,11 @@ const App = (() => {
     $('#btn-load').addEventListener('click', loadProfile);
     $('#btn-wind').addEventListener('click', loadWind);
     $('#btn-run').addEventListener('click', runStudy);
+    const rd = $('#btn-redesign');
+    if (rd) rd.addEventListener('click', () => {
+      if (S.selected == null) { status('#design-status', 'Run a study and select a design first.', 'warn'); return; }
+      selectDesign(S.selected).then(() => status('#design-status', 'Design recalculated.', 'ok'));
+    });
     $('#btn-report').addEventListener('click', makeReport);
     $('#btn-svg').addEventListener('click', downloadDiagrams);
     $('#btn-csv').addEventListener('click', downloadCsv);
@@ -865,6 +870,8 @@ const App = (() => {
         load_growth_rate: +($('#load-growth') || { value: 0 }).value,
         unmet_load_penalty: +$('#unmet-penalty').value,
         emissions_price: +$('#carbon-price').value,
+        include_salvage: $('#salvage') ? $('#salvage').checked : true,
+        decommissioning_fraction: +(($('#decommissioning') || { value: 0 }).value),
       },
     });
 
@@ -964,13 +971,72 @@ const App = (() => {
     d.chargers ? `${d.chargers} EV charge point${d.chargers > 1 ? 's' : ''}` : null,
   ].filter(Boolean).join(' + ') || 'Grid only';
 
+  /* The electrical design basis. Everything the sizing engine used to
+     assume silently - 400 V, 50 Hz, a 10 kA fault, -5/45 °C, a generic
+     module - is now stated on the Design page and travels with the
+     project. Blank temperatures are taken from the site's hourly data. */
+  function designInputs() {
+    const num = (sel) => { const el = $(sel); if (!el || el.value === '') return null;
+      const v = +el.value; return Number.isFinite(v) ? v : null; };
+    const module = {};
+    $$('[id^="dz-m-"]').forEach(el => { if (el.value !== '') module[el.id.slice(5)] = +el.value; });
+    const lengths = {};
+    $$('[data-len]').forEach(el => { if (el.value !== '') lengths[el.dataset.len] = +el.value; });
+    return {
+      system_voltage_v: num('#dz-voltage') || 400,
+      frequency_hz: num('#dz-freq') || 50,
+      earthing: val('#dz-earthing', 'TN-S'),
+      fault_level_ka: num('#dz-fault') || 10,
+      ambient_min_c: num('#dz-tmin'),
+      ambient_max_c: num('#dz-tmax'),
+      installation: { dwelling: val('#dz-dwelling', 'auto'), ess_location: val('#dz-ess-loc', 'exterior_wall') },
+      pv_module: module,
+      cable_lengths: lengths,
+      cable_install: {
+        method: val('#dz-method', 'auto'), insulation: val('#dz-insulation', 'xlpe'),
+        material: val('#dz-material', 'copper'), ground_temp_c: num('#dz-ground-t') ?? 20,
+        soil_resistivity: num('#dz-soil') ?? 2.5, group_identical: val('#dz-group', 'true') === 'true',
+      },
+      short_circuit: {
+        voltage_tolerance: val('#dz-tol', 'lv6'), network_r_over_x: num('#dz-rx') ?? 0.1,
+        generator_xd: num('#dz-xd') ?? 0.15, converter_fault_pu: num('#dz-kpv') ?? 1.2,
+        battery_fault_pu: num('#dz-kbat') ?? 1.5,
+      },
+      stand_alone: {
+        autonomy_days: num('#dz-autonomy') ?? 2, design_margin: num('#dz-margin') ?? 1.15,
+        critical: val('#dz-critical', 'false') === 'true',
+      },
+    };
+  }
+
+  function applyDesignInputs(d) {
+    if (!d || typeof d !== 'object') return;
+    put('#dz-voltage', d.system_voltage_v); put('#dz-freq', d.frequency_hz);
+    put('#dz-earthing', d.earthing); put('#dz-fault', d.fault_level_ka);
+    put('#dz-tmin', d.ambient_min_c); put('#dz-tmax', d.ambient_max_c);
+    const inst = d.installation || {};
+    if (inst.dwelling != null) put('#dz-dwelling', String(inst.dwelling));
+    put('#dz-ess-loc', inst.ess_location);
+    Object.entries(d.pv_module || {}).forEach(([k, v]) => put('#dz-m-' + k, v));
+    const ci = d.cable_install || {}, sc = d.short_circuit || {}, sa = d.stand_alone || {};
+    put('#dz-method', ci.method); put('#dz-insulation', ci.insulation); put('#dz-material', ci.material);
+    put('#dz-ground-t', ci.ground_temp_c); put('#dz-soil', ci.soil_resistivity);
+    if (ci.group_identical != null) put('#dz-group', String(ci.group_identical));
+    put('#dz-tol', sc.voltage_tolerance); put('#dz-rx', sc.network_r_over_x); put('#dz-xd', sc.generator_xd);
+    put('#dz-kpv', sc.converter_fault_pu); put('#dz-kbat', sc.battery_fault_pu);
+    put('#dz-autonomy', sa.autonomy_days); put('#dz-margin', sa.design_margin);
+    if (sa.critical != null) put('#dz-critical', String(sa.critical));
+    Object.entries(d.cable_lengths || {}).forEach(([k, v]) => put(`[data-len="${k}"]`, v));
+  }
+
   async function selectDesign(i) {
     if (i < 0 || i >= S.front.length) return;
     S.selected = i;
     $$('#front-table tr[data-i]').forEach(tr =>
       tr.classList.toggle('sel', +tr.dataset.i === i));
 
-    const d = await call('detail', { session: S.session, x: S.front[i].x });
+    const d = await call('detail', { session: S.session, x: S.front[i].x,
+                                     design: designInputs() });
     if (!d.ok) { status('#run-status', d.error, 'err'); return; }
     S.detail = d;
     S.done.add('results'); S.done.add('design'); S.done.add('diagrams');
@@ -996,6 +1062,18 @@ const App = (() => {
           ${kpi(eng(m.emissions_kg, 'kg'), 'CO₂ per year')}
         </div>
       </div>
+      ${m.interruptions_per_year != null ? `<div class="card"><h2>Supply reliability</h2>
+        <p class="help">IEEE Std 1366 indices for the site (an hour with more than
+          1 % of demand unserved is an hour of interruption) and IEC 61703
+          availability terms.</p>
+        <div class="kpis">
+          ${kpi(m.interruptions_per_year.toFixed(1), 'Interruptions per year', 'SAIFI')}
+          ${kpi(m.interruption_hours_per_year.toFixed(1) + ' h', 'Interruption per year', 'SAIDI')}
+          ${kpi(m.mean_interruption_hours.toFixed(1) + ' h', 'Mean interruption', 'CAIDI = mean down time')}
+          ${kpi((m.service_availability * 100).toFixed(3) + '%', 'Service availability', 'ASAI')}
+          ${kpi(m.mean_up_time_h >= 8760 ? '> 1 yr' : m.mean_up_time_h.toFixed(0) + ' h', 'Mean up time', 'IEC 61703 MUT')}
+          ${kpi(m.lole_h + ' h', 'Loss of load', 'LOLE')}
+        </div></div>` : ''}
       <div class="card"><h2>Cost breakdown</h2><div id="chart-cost"></div></div>
       <div class="card"><h2>Energy flows</h2>
         <div class="chart-row"><div id="chart-monthly"></div><div id="chart-daily"></div></div>
@@ -1053,10 +1131,39 @@ const App = (() => {
   }
 
   /* ------------------------------------------------------------- design */
+  const PILL = { pass: ['ok', 'pass'], fail: ['bad', 'fail'], warn: ['warn', 'review'], info: ['info', 'note'] };
+  const pill = st => { const p = PILL[st] || PILL.info; return `<span class="pill ${p[0]}">${p[1]}</span>`; };
+
+  function complianceTable(list) {
+    return `<div class="table-wrap"><table class="compliance"><thead><tr>
+      <th>Status</th><th>Requirement</th><th>Finding</th></tr></thead><tbody>` +
+      list.map(c => `<tr><td>${pill(c.status)}</td>
+        <td><b>${c.title}</b><div class="std">${c.standard}${c.clause && c.clause !== '-' ? ' · ' + c.clause : ''}</div></td>
+        <td>${c.detail}</td></tr>`).join('') + '</tbody></table></div>';
+  }
+
   function renderDesign(d) {
     const de = d.design;
     const host = $('#design-body');
     let h = '';
+
+    if (de.compliance && de.compliance.length) {
+      const sm = de.compliance_summary || { counts: {} };
+      const n = k => (sm.counts || {})[k] || 0;
+      const order = { fail: 0, warn: 1, info: 2, pass: 3 };
+      const list = de.compliance.slice().sort((a, b) => (order[a.status] ?? 9) - (order[b.status] ?? 9));
+      h += `<div class="card"><h2>Standards compliance ${pill(sm.worst || 'pass')}</h2>
+        <p class="help">${n('pass')} passed, ${n('warn')} to review, ${n('fail')} failed,
+          ${n('info')} obligations noted. Checks a sizing tool can make from the
+          design; they do not replace the installer's verification against the
+          local wiring rules.</p>
+        <div class="kpis">
+          ${kpi(eng(de.fault_level_ka * 1000, 'A'), 'Prospective fault, LV busbar')}
+          ${de.faults && de.faults.islanded ? kpi(eng(de.faults.minimum_a, 'A'), 'Minimum island fault') : ''}
+          ${de.design_temperatures && de.design_temperatures.ambient_min_c != null ? kpi(de.design_temperatures.ambient_min_c.toFixed(0) + ' / ' + de.design_temperatures.ambient_max_c.toFixed(0) + ' °C', 'Design ambient min / max') : ''}
+          ${de.totals && de.totals.cable_losses_kwh != null ? kpi(eng(de.totals.cable_losses_kwh, 'kWh'), 'Cable losses per year') : ''}
+        </div>${complianceTable(list)}</div>`;
+    }
 
     if (de.pv) {
       const iv = de.pv.inverter, st = de.pv.strings;
@@ -1077,6 +1184,9 @@ const App = (() => {
           <tr><td>String Voc at ${st.limits.design_t_min_c}°C</td><td>${st.string_voc_cold_v.toFixed(0)} V (limit ${st.limits.inverter_v_max} V)</td></tr>
           <tr><td>String Vmp at ${st.limits.design_t_max_cell_c}°C cell</td><td>${st.string_vmp_hot_v.toFixed(0)} V (MPPT min ${st.limits.mppt_window_v[0]} V)</td></tr>
           <tr><td>Current per MPPT input</td><td>${st.current_per_mppt_a.toFixed(1)} A</td></tr>
+          ${st.string_vmp_cold_v ? `<tr><td>String Vmp at ${st.limits.design_t_min_c.toFixed(0)}°C</td><td>${st.string_vmp_cold_v.toFixed(0)} V (MPPT max ${st.limits.mppt_window_v[1]} V)</td></tr>` : ''}
+          ${de.pv.string_fuse ? `<tr><td>String protection</td><td>${de.pv.string_fuse.required ? de.pv.string_fuse.rating_a + ' A gPV fuse, both poles' : 'not required'}</td></tr>` : ''}
+          ${de.pv.dc_cable ? `<tr><td>String cable</td><td>${de.pv.dc_cable.csa_mm2} mm² PV cable (EN 50618), rated ${de.pv.dc_cable_design_current_a.toFixed(1)} A</td></tr>` : ''}
         </tbody></table></div>`;
       }
       h += '</div>';
@@ -1090,19 +1200,46 @@ const App = (() => {
         ${kpi(eng(p.rated_kw, 'kW'), 'PCS rating', '4-quadrant')}
         ${kpi(de.battery.cycles_per_year.toFixed(0), 'Cycles per year')}
         ${kpi(de.battery.expected_life_years.toFixed(1) + ' yr', 'Expected life')}
+        ${p.rated_kva ? kpi(eng(p.rated_kva, 'kVA'), 'PCS apparent power', p.rated_kva > p.rated_kw ? 'PF 0.90 at full power (IEEE 1547.9)' : '') : ''}
+        ${de.battery.round_trip_efficiency_poc ? kpi((de.battery.round_trip_efficiency_poc * 100).toFixed(1) + '%', 'Round trip at POC', 'IEC 62933-2-1') : ''}
+        ${de.battery.usable_kwh_eol != null ? kpi(eng(de.battery.usable_kwh_eol, 'kWh'), 'Usable at end of life', (de.battery.eol_capacity_fraction * 100).toFixed(0) + '% capacity') : ''}
       </div></div>`;
     }
 
+    if (de.genset) {
+      const g = de.genset;
+      h += `<div class="card"><h2>Generator</h2><div class="kpis">
+        ${kpi(g.units + ' × ' + eng(g.unit_kw, 'kW'), 'Sets', eng(g.unit_kva, 'kVA') + ' each at PF 0.8')}
+        ${kpi((g.site_derate * 100).toFixed(0) + '%', 'Site rating', 'IEC TS 62257-7-3')}
+        ${kpi(eng(g.site_kw, 'kW'), 'Available at site')}
+        ${kpi(g.run_hours.toFixed(0) + ' h', 'Run hours', (g.unit_run_hours || 0).toFixed(0) + ' unit-hours')}
+        ${kpi((g.mean_load_ratio * 100).toFixed(0) + '%', 'Mean loading of running sets')}
+      </div></div>`;
+    }
+
+    if (de.grid && de.grid.interconnection) {
+      const ic = de.grid.interconnection;
+      h += `<div class="card"><h2>Interconnection protection</h2>
+        <p class="help">${ic.standard}. Ride-through ${ic.ride_through_category}; reactive
+          power Category ${ic.reactive_category}. ${ic.note}</p>
+        <div class="table-wrap"><table><thead><tr><th>Function</th><th>Pickup</th><th>Clearing time</th></tr></thead><tbody>` +
+        ic.voltage.map(r => `<tr><td>${r.function}</td><td>${r.pickup_pu.toFixed(2)} pu</td><td>${r.clearing_s} s</td></tr>`).join('') +
+        ic.frequency.map(r => `<tr><td>${r.function}</td><td>${r.pickup_hz} Hz</td><td>${r.clearing_s} s</td></tr>`).join('') +
+        `<tr><td>Anti-islanding</td><td>—</td><td>≤ ${ic.anti_islanding_s} s</td></tr></tbody></table></div></div>`;
+    }
+
     h += `<div class="card"><h2>Cable schedule</h2>
-      <p class="help">Each conductor is sized against ampacity, voltage drop
-        and short-circuit withstand; the governing criterion is named.</p>
+      <p class="help">Each conductor is sized against ampacity (IEC 60364-5-52
+        Annex B for the installation method, with temperature, soil and grouping
+        corrections), voltage drop and short-circuit withstand; the governing
+        criterion is named.</p>
       <div class="table-wrap"><table><thead><tr>
-        <th>Circuit</th><th>mm²</th><th>Runs</th><th>Length m</th>
+        <th>Circuit</th><th>mm²</th><th>Runs</th><th>Length m</th><th>Method</th><th>Derating</th>
         <th>Design A</th><th>Capacity A</th><th>Drop %</th><th>Governed by</th>
       </tr></thead><tbody>` +
       de.schedules.cables.map(c => `<tr><td>${c.circuit}</td><td>${c.csa_mm2}</td>
-        <td>${c.runs}</td><td>${c.length_m}</td><td>${c.current_a}</td>
-        <td>${c.ampacity_a}</td><td>${c.voltage_drop_pct}</td>
+        <td>${c.runs}</td><td>${c.length_m}</td><td>${c.method || '—'}</td><td>${c.derating != null ? c.derating : '—'}</td>
+        <td>${c.current_a}</td><td>${c.ampacity_a}</td><td>${c.voltage_drop_pct}</td>
         <td>${(c.governing || '').replace(/_/g, ' ')}</td></tr>`).join('')
       + `</tbody></table></div>
       <p class="muted" style="margin-top:10px">Estimated conductor mass:
@@ -1110,14 +1247,17 @@ const App = (() => {
 
     h += `<div class="card"><h2>Protection schedule</h2>
       <p class="help">Each device satisfies both IEC 60364-4-43 conditions:
-        I<sub>B</sub> ≤ I<sub>N</sub> ≤ I<sub>Z</sub> and I₂ ≤ 1.45·I<sub>Z</sub>.</p>
+        I<sub>B</sub> ≤ I<sub>N</sub> ≤ I<sub>Z</sub> and I₂ ≤ 1.45·I<sub>Z</sub>,
+        and its breaking capacity covers the prospective fault (434.5.1).</p>
       <div class="table-wrap"><table><thead><tr>
         <th>Circuit</th><th>Device</th><th>Rating A</th><th>Curve</th>
-        <th>Design A</th><th>Compliant</th></tr></thead><tbody>` +
+        <th>Design A</th><th>Breaking</th><th>Min. earth fault at end</th><th>Compliant</th></tr></thead><tbody>` +
       de.schedules.protection.map(p => `<tr><td>${p.circuit}</td>
         <td>${String(p.device).toUpperCase()}</td><td>${p.rating_a}</td>
         <td>${p.curve || '—'}</td><td>${p.design_current_a}</td>
-        <td><span class="pill ${p.compliant ? 'ok' : 'bad'}">${p.compliant ? 'yes' : 'review'}</span></td>
+        <td>${p.breaking_capacity_ka != null ? p.breaking_capacity_ka + ' kA' : '—'}</td>
+        <td>${p.end_fault_ik1_min_a ? eng(p.end_fault_ik1_min_a, 'A') + (p.disconnection_ok === false ? ' ✗' : ' ✓') : '—'}</td>
+        <td><span class="pill ${p.compliant && p.breaking_ok !== false ? 'ok' : 'bad'}">${p.compliant && p.breaking_ok !== false ? 'yes' : 'review'}</span></td>
         </tr>`).join('') + '</tbody></table></div></div>';
 
     h += `<div class="card"><h2>Isolation and safety</h2><div class="table-wrap"><table><thead><tr>
@@ -1129,6 +1269,7 @@ const App = (() => {
       <p class="muted">Type ${de.rcd.type}, ${de.rcd.rating_ma} mA. ${de.rcd.reason}</p>
       <h3>Surge protection</h3>
       <p class="muted">AC: ${de.spd_ac.class}, ${de.spd_ac.discharge_current}, at the ${de.spd_ac.location.toLowerCase()}.`
+      + ` Uc ${de.spd_ac.uc_v.toFixed(0)} V (${de.earthing_system}).`
       + (de.pv ? ` DC: ${de.pv.spd_dc.class}, Uc ${de.pv.spd_dc.uc_v.toFixed(0)} V.` : '')
       + '</p></div>';
 
@@ -1210,7 +1351,7 @@ const App = (() => {
   function projectSnapshot() {
     const loadMode = segMode('#load-mode', 'mode', 'synthetic');
     return {
-      application: 'EnerSys',
+      application: 'HES',
       version: PROJECT_VERSION,
       saved: new Date().toISOString(),
       title: val('#report-title', 'Hybrid energy system study'),
@@ -1243,6 +1384,8 @@ const App = (() => {
         escalation_rate: +val('#escalation', 0.02),
         currency: val('#currency', 'USD'),
         load_growth_rate: +val('#load-growth', 0),
+        include_salvage: $('#salvage') ? $('#salvage').checked : true,
+        decommissioning_fraction: +val('#decommissioning', 0),
         unmet_load_penalty: +val('#unmet-penalty', 0),
         emissions_price: +val('#carbon-price', 0),
       },
@@ -1256,6 +1399,7 @@ const App = (() => {
         iterations: +val('#iterations', 40),
         seed: +val('#seed', 1234),
       },
+      design: designInputs(),
       selected: S.selected != null ? S.front[S.selected] : null,
     };
   }
@@ -1333,7 +1477,7 @@ const App = (() => {
   function applyProject(p) {
     if (!p || typeof p !== 'object') throw new Error('That file does not contain a project.');
     if (!p.location && !p.components) {
-      throw new Error('That file is JSON, but it is not an EnerSys project — it has neither a location nor any components.');
+      throw new Error('That file is JSON, but it is not an HES project — it has neither a location nor any components.');
     }
 
     if (p.location) {
@@ -1370,6 +1514,8 @@ const App = (() => {
     put('#proj-years', e.project_years); put('#interest', e.interest_rate);
     put('#escalation', e.escalation_rate); put('#currency', e.currency);
     put('#load-growth', e.load_growth_rate);
+    put('#decommissioning', e.decommissioning_fraction);
+    if (typeof e.include_salvage === 'boolean' && $('#salvage')) $('#salvage').checked = e.include_salvage;
     put('#unmet-penalty', e.unmet_load_penalty); put('#carbon-price', e.emissions_price);
 
     const st = p.study || {};
@@ -1383,6 +1529,7 @@ const App = (() => {
     put('#seed', st.seed);
 
     put('#report-title', p.title);
+    applyDesignInputs(p.design);
 
     // Nothing computed survives the import: the front on screen belongs to
     // the previous study and would be read as if it belonged to this one.
@@ -1462,13 +1609,16 @@ th{background:#f6f7f9;font-weight:650}
 .kpi{border:1px solid #dfe3e8;border-radius:8px;padding:10px}
 .kpi b{display:block;font-size:18px}.kpi span{font-size:11px;color:#6b7280}
 .warn{background:#fdf3e3;color:#b45309;padding:9px 12px;border-radius:6px;margin:6px 0;font-size:12px}
+.pill{padding:1px 7px;border-radius:20px;font-size:10.5px;font-weight:650}.pill.ok{background:#e6f4ea;color:#1e7b34}
+.pill.bad{background:#fde8e8;color:#b42318}.pill.warn{background:#fdf3e3;color:#b45309}.pill.info{background:#eef0f3;color:#555}
+.std{font-size:11px;color:#666}
 .meta{color:#6b7280;font-size:11.5px;margin-bottom:20px}
 svg{max-width:100%;height:auto}
 @media print{body{margin:0}h2{break-after:avoid}table{break-inside:avoid}}
 </style></head><body>
 <h1>${title}</h1>
 <div class="meta">${location().name} — ${location().latitude.toFixed(4)}°, ${location().longitude.toFixed(4)}°,
-${location().elevation_m} m · Generated ${new Date().toLocaleString()} · EnerSys ${S.info.version}</div>
+${location().elevation_m} m · Generated ${new Date().toLocaleString()} · HES ${S.info.version}</div>
 
 <h2>Recommended system</h2>
 <div class="kpis">
@@ -1491,11 +1641,21 @@ ${['load_kwh','pv_kwh','wind_kwh','genset_kwh','imported_kwh','exported_kwh',
   .map(k => `<tr><td>${k.replace(/_kwh$/, '').replace(/_/g, ' ')}</td><td>${(d.energy[k] / 1000).toFixed(1)}</td></tr>`).join('')}
 </table>
 
+${d.metrics.interruptions_per_year != null ? `<h2>Supply reliability (IEEE 1366 / IEC 61703)</h2>
+<table><tr><th>Index</th><th>Value</th></tr>
+<tr><td>Interruptions per year (SAIFI)</td><td>${d.metrics.interruptions_per_year.toFixed(1)}</td></tr>
+<tr><td>Interruption hours per year (SAIDI)</td><td>${d.metrics.interruption_hours_per_year.toFixed(1)}</td></tr>
+<tr><td>Mean interruption duration (CAIDI)</td><td>${d.metrics.mean_interruption_hours.toFixed(1)} h</td></tr>
+<tr><td>Service availability (ASAI)</td><td>${(d.metrics.service_availability * 100).toFixed(3)}%</td></tr>
+<tr><td>Loss of load expectation (LOLE)</td><td>${d.metrics.lole_h} h</td></tr>
+<tr><td>Expected energy not served (EENS)</td><td>${Math.round(d.metrics.eens_kwh)} kWh</td></tr></table>` : ''}
+
 <h2>Cost breakdown</h2>
-<table><tr><th>Component</th><th>Capital</th><th>Replacement</th><th>O&amp;M</th><th>Recurring</th><th>NPC</th></tr>
+<table><tr><th>Component</th><th>Capital</th><th>Replacement</th><th>O&amp;M</th><th>Recurring</th><th>Residual / disposal</th><th>NPC</th></tr>
 ${Object.entries(d.economics.items).map(([k, v]) =>
   `<tr><td>${k.replace(/_/g, ' ')}</td><td>${Chart.money(v.capital, cur)}</td><td>${Chart.money(v.replacement, cur)}</td>
-   <td>${Chart.money(v.om, cur)}</td><td>${Chart.money(v.recurring, cur)}</td><td><b>${Chart.money(v.npc, cur)}</b></td></tr>`).join('')}
+   <td>${Chart.money(v.om, cur)}</td><td>${Chart.money(v.recurring, cur)}</td>
+   <td>${Chart.money((v.salvage || 0) + (v.decommissioning || 0), cur)}</td><td><b>${Chart.money(v.npc, cur)}</b></td></tr>`).join('')}
 </table>
 
 <h2>Cable schedule</h2>
@@ -1511,6 +1671,8 @@ ${d.design.schedules.protection.map(p => `<tr><td>${p.circuit}</td><td>${String(
 
 <h2>Single-line diagram</h2>${d.diagrams.single_line}
 <h2>Three-line diagram</h2>${d.diagrams.three_line}
+
+${(d.design.compliance || []).length ? `<h2>${rtl ? 'انطباق با استانداردها' : 'Standards compliance'}</h2>` + complianceTable(d.design.compliance) : ''}
 
 ${(d.design.warnings || []).length ? '<h2>Items requiring attention</h2>'
   + d.design.warnings.map(w => `<div class="warn">${w}</div>`).join('') : ''}
