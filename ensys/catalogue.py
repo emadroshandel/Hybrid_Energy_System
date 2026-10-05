@@ -79,7 +79,19 @@ CATALOGUE = {
             F("azimuth_deg", "Azimuth", 180, "°",
               "180 is due south, 0 due north."),
             F("system_losses", "DC system losses", 0.14, "fraction",
-              "Soiling, mismatch, wiring and degradation combined."),
+              "Soiling, shading, mismatch, DC wiring, LID, nameplate and "
+              "availability combined (PVWatts budget). Excludes the "
+              "inverter, which is entered separately."),
+            F("inverter_efficiency", "Inverter efficiency", 0.97, "fraction",
+              "Weighted (Euro / CEC) efficiency. IEC 61724-1 measures yield "
+              "at the AC output, after the inverter."),
+            F("dc_ac_ratio", "DC/AC ratio", 1.20, None,
+              "Array kWp over inverter kW. Output above the inverter rating "
+              "is clipped in the hourly simulation."),
+            F("degradation_per_year", "Degradation per year", 0.005,
+              "fraction",
+              "Used for the end-of-life check. 0.4-0.7 %/yr is typical for "
+              "crystalline modules under IEC 61215 warranties."),
             F("tracking", "Mounting", "fixed", None, None, "select",
               ["fixed", "single_axis", "two_axis"]),
         ],
@@ -117,6 +129,22 @@ CATALOGUE = {
             F("v_cutin", "Cut-in speed", 3, "m/s"),
             F("v_rated", "Rated speed", 12, "m/s"),
             F("v_cutout", "Cut-out speed", 25, "m/s"),
+            F("availability", "Availability", 0.97, "fraction",
+              "Time-based availability (IEC 61400-26-1). 95-98 % is typical "
+              "for modern onshore machines; remote sites run lower."),
+            F("electrical_loss", "Electrical losses", 0.02, "fraction",
+              "Collection cable and transformer losses to the bus."),
+            F("wake_loss", "Wake losses", 0.0, "fraction",
+              "Only for several turbines in a group: 5-10 % is typical."),
+            F("iec_class", "IEC 61400-1 class", "", None,
+              "Checked against the site's hub-height mean wind speed.",
+              "select", ["", "I", "II", "III", "S"]),
+            F("regulation", "Power regulation", "pitch", None,
+              "Pitch-regulated curves are corrected for air density in "
+              "wind speed, stall-regulated in power (IEC 61400-12-1 "
+              "Eq. 13/14).", "select", ["pitch", "stall"]),
+            F("relative_humidity", "Mean relative humidity", 0.5, "fraction",
+              "Used in the hourly air density, IEC 61400-12-1 Eq. (12)."),
         ],
     },
     # ================================================================ hydro
@@ -185,6 +213,12 @@ CATALOGUE = {
                          "gas_natural"]),
             F("fuel_price", "Fuel price", 1.0, "currency/litre"),
             F("om_cost_per_hour", "O&M per running hour", 1.5, "currency"),
+            F("site_derate", "Site derating factor", None, "fraction",
+              "Leave blank to derive it from the site's altitude and design "
+              "temperature (IEC TS 62257-7-3 Table 1)."),
+            F("humidity_pct", "Design relative humidity", 30, "%",
+              "Above 60 % RH a hot-climate set derates further "
+              "(IEC TS 62257-7-3 Table 1)."),
         ],
     },
     "biomass": {
@@ -264,6 +298,22 @@ CATALOGUE = {
             F("chemistry", "Chemistry", "lithium_lfp", None, None, "select",
               list(BatteryStorage.PRESETS.keys())),
             F("soc_initial", "Initial state of charge", 0.5, "fraction"),
+            F("pcs_efficiency", "Converter (PCS) efficiency", 0.98,
+              "fraction",
+              "One-way. Round-trip efficiency at the point of connection is "
+              "(cell x PCS)^2, as IEC 62933-2-1 defines it."),
+            F("auxiliary_w_per_kwh", "Auxiliary consumption", 1.0, "W/kWh",
+              "BMS, cooling and fire detection, drawn continuously "
+              "(IEC 62933-2-1 5.2.6). 0.5-2 for residential packs, 2-5 for "
+              "containerised systems in hot climates."),
+            F("eol_capacity_fraction", "End-of-life capacity", None,
+              "fraction",
+              "Blank: 0.80 (0.90-0.95 for flow). Capacity at end of service "
+              "life. The end-of-life check "
+              "re-runs the design at this capacity (IEC 62933-2-1 5.2.4)."),
+            F("dc_voltage_v", "Battery DC voltage", None, "V",
+              "Used for the DC fault-current estimate. Blank: 48 V for "
+              "small residential units, 800 V otherwise."),
         ],
     },
     "pumped_hydro": {
@@ -396,7 +446,7 @@ _BUILDERS = {
 # Config keys that are not constructor arguments.
 _NON_CONSTRUCTOR = {
     "enabled", "chargers", "unit_kwp", "unit_kwh", "unit_kw", "preset",
-    "ref_height_m", "cost_level", "cost_region",
+    "ref_height_m", "cost_level", "cost_region", "humidity_pct",
 }
 
 
