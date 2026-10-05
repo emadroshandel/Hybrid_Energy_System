@@ -42,6 +42,7 @@ from .resources import providers as prov_mod
 from .resources.geo import Location, PRESETS
 from .resources.synth import synthesise_year
 from .sizing.design import size_system
+from .sizing import standards as std_mod
 from . import validate as validate_mod
 from .assets import Dispatchable, NonDispatchable, Storage
 from .sizing.inverter import PVModule
@@ -459,6 +460,32 @@ def h_run_study(payload):
     )
     build_errors = comps.pop("_errors", [])
 
+    # IEC TS 62257-7-3 5.2.4: a generator delivers its ISO 8528-1 rating
+    # only at 25 C, near sea level and 30 % RH. Unless the user has entered
+    # a derating factor, derive it from the site: its altitude and the
+    # hottest 1 % of hours in the temperature series (the hours a hot-
+    # climate set is most likely to be needed). The dispatch then uses the
+    # derated output.
+    if comps.get("genset") is not None:
+        gcfg = cfg.get("genset") or {}
+        given = gcfg.get("site_derate")
+        try:
+            given = float(given) if given not in (None, "") else 0.0
+        except (TypeError, ValueError):
+            given = 0.0
+        temps = (resources or {}).get("temperature_c") or []
+        t_design = (sorted(temps)[int(0.99 * (len(temps) - 1))]
+                    if temps else 35.0)
+        info = std_mod.genset_site_derating(
+            t_design, getattr(location, "elevation_m", 0.0) or 0.0,
+            float(gcfg.get("humidity_pct") or 30.0),
+        )
+        if 0.0 < given <= 1.0:
+            comps["genset"].site_derate = given
+        else:
+            comps["genset"].site_derate = info["factor"]
+        sess["genset_derating"] = info
+
     # Plausibility, before anything expensive runs. These never block the
     # study - an unusual site is still a site - but they travel back with
     # the result so the headline capacity is read next to the assumptions
@@ -566,6 +593,8 @@ def h_run_study(payload):
         unmet_load_penalty=float(ecfg.get("unmet_load_penalty", 0.0)),
         emissions_price=float(ecfg.get("emissions_price", 0.0)),
         load_growth_rate=float(ecfg.get("load_growth_rate", 0.0)),
+        include_salvage=bool(ecfg.get("include_salvage", True)),
+        decommissioning_fraction=float(ecfg.get("decommissioning_fraction", 0.0) or 0.0),
     )
 
     from .system import SystemConfig
@@ -708,15 +737,13 @@ def h_detail(payload):
     system, disp, econ_result, m = result.rerun(target)
     location = sess.get("location")
 
-    design = size_system(
-        system, disp, location=location,
-        system_voltage_v=float(payload.get("system_voltage_v", 400)),
-        ambient_max_c=float(payload.get("ambient_max_c", 45)),
-        ambient_min_c=float(payload.get("ambient_min_c", -5)),
-        module=PVModule(),
-        cable_lengths=payload.get("cable_lengths"),
-        fault_level_ka=float(payload.get("fault_level_ka", 10)),
-    )
+    design_inputs = _design_inputs(payload, sess, system, disp)
+    design = size_system(system, disp, location=location, **design_inputs)
+    design["inputs"] = {
+        k: (v.to_dict() if hasattr(v, "to_dict") else v)
+        for k, v in design_inputs.items()
+        if k not in ("pv_dc_series", "pv_poa_series", "pv_cell_temps")
+    }
 
     title = payload.get("title") or "Hybrid energy system"
     subtitle = (
@@ -753,6 +780,8 @@ def h_detail(payload):
                 k: {
                     "npc": v["npc"], "capital": v["capital"],
                     "replacement": v["replacement"], "om": v["om"],
+                    "salvage": v.get("salvage", 0.0),
+                    "decommissioning": v.get("decommissioning", 0.0),
                     "recurring": v["recurring"],
                     "n_replacements": v["n_replacements"],
                 }
@@ -784,6 +813,94 @@ def h_detail(payload):
             ],
         },
         "sample_week": _sample_week(disp, payload.get("week_start_day", 180)),
+    }
+
+
+def _num(v, default):
+    try:
+        if v is None or v == "":
+            return default
+        return float(v)
+    except (TypeError, ValueError):
+        return default
+
+
+def _design_inputs(payload, sess, system, disp):
+    """
+    Collect the electrical-design inputs for one design.
+
+    The interface used to send only the decision vector, so every design
+    was drawn at 400 V, 50 Hz, -5/45 C, 10 kA and a generic 550 W module
+    whatever the site. These now come from the Design page, and where the
+    user has not said, from the site data the study already holds:
+
+      * design temperatures from the hourly temperature series - the
+        record low sets the string Voc limit (IEC TS 62257-7-1 4.1.9), so
+        when the user gives none, IEC 62548-1:2023 F.1 b) is followed: the
+        lowest temperature in hours with at least 100 W/m2 of irradiance
+        (the array cannot reach Voc max in the dark). A user's figure - a
+        record low or the ASHRAE extreme annual mean minimum - is used as
+        given;
+      * the hottest modelled cell temperature for the Vmp limit;
+      * the DC array series for the inverter and string design;
+      * whether the storage sits at a dwelling (NFPA 855 Chapter 15),
+        inferred from the size of the load when not stated.
+    """
+    d = payload.get("design") or {}
+    get = lambda k, default=None: d.get(k, payload.get(k, default))
+
+    resources = sess.get("resources") or {}
+    temps = resources.get("temperature_c") or []
+    amb_min_user = _num(get("ambient_min_c"), None)
+    amb_max_user = _num(get("ambient_max_c"), None)
+    if temps:
+        ghi = resources.get("ghi") or []
+        lit = [t for t, g in zip(temps, ghi) if g >= 100.0] if ghi else []
+        t_lo = min(lit) if lit else min(temps) + 10.0
+        t_hi = max(temps)
+        amb_min = amb_min_user if amb_min_user is not None else t_lo
+        amb_max = max(t_hi, amb_max_user) if amb_max_user is not None else max(t_hi, 35.0)
+    else:
+        amb_min = amb_min_user if amb_min_user is not None else -5.0
+        amb_max = amb_max_user if amb_max_user is not None else 45.0
+
+    pv_info = sess.get("pv_info") or {}
+    cell = pv_info.get("cell_temperature_c") or []
+    dc_unit = pv_info.get("dc_kw")
+    pv_dc = None
+    if dc_unit and system.pv is not None and system.n_pv > 0:
+        pv_dc = [p * system.n_pv for p in dc_unit]
+
+    winfo = sess.get("wind_info") or {}
+
+    inst = dict(get("installation") or {})
+    if inst.get("dwelling") in (None, "", "auto"):
+        annual = sum(disp.load) if disp.load else 0.0
+        inst["dwelling"] = annual < 30000.0 and max(disp.load or [0]) < 40.0
+        inst["dwelling_inferred"] = True
+    else:
+        inst["dwelling"] = bool(inst.get("dwelling")) and inst.get("dwelling") != "false"
+
+    return {
+        "system_voltage_v": _num(get("system_voltage_v"), 400.0),
+        "frequency_hz": _num(get("frequency_hz"), 50.0),
+        "earthing": get("earthing") or "TN-S",
+        "power_factor": _num(get("power_factor"), 0.95),
+        "ambient_max_c": amb_max,
+        "ambient_min_c": amb_min,
+        "module": PVModule.from_dict(get("pv_module") or {}),
+        "cable_lengths": get("cable_lengths"),
+        "fault_level_ka": _num(get("fault_level_ka"), 10.0),
+        "pv_dc_series": pv_dc,
+        "cell_temp_max_c": max(cell) if cell else None,
+        "pv_poa_series": pv_info.get("poa_irradiance"),
+        "pv_cell_temps": cell or None,
+        "installation": inst,
+        "wind_mean_hub_ms": winfo.get("mean_wind_speed_hub_ms"),
+        "genset_derating": sess.get("genset_derating"),
+        "cable_install": get("cable_install") or {},
+        "short_circuit": get("short_circuit") or {},
+        "stand_alone": get("stand_alone") or {},
     }
 
 
