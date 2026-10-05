@@ -265,34 +265,56 @@ def size_grid_interface(import_series, export_series, voltage_v=400,
 
 def mppt_config(rating_kw):
     """
-    Realistic MPPT input count and per-input current limit for an inverter of
-    a given rating.
+    Realistic MPPT input count, per-input current limit and DC voltage class
+    for an inverter of a given rating.
 
     Sizing an array against a fixed "2 MPPT inputs at 26 A" assumption is
     only valid for a small string inverter. A 630 kW central inverter is a
     different machine: its DC side is fed from combiner boxes and accepts
-    thousands of amps across a handful of inputs. Applying the string-
-    inverter limit to it produces an impossible design, and applying the
-    central-inverter limit to a residential unit produces an unsafe one.
+    thousands of amps across a handful of inputs, and it is a 1500 V
+    machine. Applying the string-inverter limit to it produces an
+    impossible design, and applying the central-inverter limit to a
+    residential unit produces an unsafe one.
     """
     if rating_kw <= 6:
-        return {"n_mppt": 2, "i_max_per_mppt": 13.0, "class": "residential string"}
+        return {"n_mppt": 2, "i_max_per_mppt": 13.0, "class": "residential string",
+                "v_max": 1000.0, "mppt_v": (120.0, 800.0)}
     if rating_kw <= 30:
-        return {"n_mppt": 3, "i_max_per_mppt": 26.0, "class": "commercial string"}
+        return {"n_mppt": 3, "i_max_per_mppt": 26.0, "class": "commercial string",
+                "v_max": 1000.0, "mppt_v": (200.0, 800.0)}
     if rating_kw <= 150:
-        return {"n_mppt": 12, "i_max_per_mppt": 40.0, "class": "large string"}
+        return {"n_mppt": 12, "i_max_per_mppt": 40.0, "class": "large string",
+                "v_max": 1100.0, "mppt_v": (200.0, 1000.0)}
     if rating_kw <= 400:
-        return {"n_mppt": 12, "i_max_per_mppt": 60.0, "class": "modular central"}
-    return {"n_mppt": 16, "i_max_per_mppt": 120.0, "class": "central"}
+        return {"n_mppt": 12, "i_max_per_mppt": 60.0, "class": "modular central",
+                "v_max": 1500.0, "mppt_v": (500.0, 1300.0)}
+    return {"n_mppt": 16, "i_max_per_mppt": 120.0, "class": "central",
+            "v_max": 1500.0, "mppt_v": (875.0, 1300.0)}
 
 
 class PVModule:
-    """Electrical parameters of one PV module, at STC."""
+    """
+    Electrical parameters of one PV module, at STC, as printed on the
+    datasheet.
+
+    `max_system_voltage_v` and `max_series_fuse_a` (I_MOD_MAX_OCPR) are the
+    two safety ratings the string design must respect: the first caps the
+    cold-morning open-circuit voltage of a string whatever the inverter
+    allows, the second decides whether string fuses are needed
+    (IEC 62548, IEC TS 62257-7-1 5.3.4).
+
+    `temp_coeff_vmp` is the voltage coefficient at maximum power. Datasheets
+    often omit it; it is then estimated from P = V I as
+    beta_Vmp ~= gamma_Pmax - alpha_Isc, which is closer than reusing the
+    power coefficient for a voltage.
+    """
 
     def __init__(self, name="Generic 550 W mono", pmax_w=550.0, vmp=41.8,
                  imp=13.16, voc=49.9, isc=13.95,
                  temp_coeff_voc=-0.0027, temp_coeff_pmax=-0.0035,
-                 temp_coeff_isc=0.0005):
+                 temp_coeff_isc=0.0005, temp_coeff_vmp=None,
+                 max_system_voltage_v=1500.0, max_series_fuse_a=25.0,
+                 isc_bnpi=None):
         self.name = name
         self.pmax_w = float(pmax_w)
         self.vmp = float(vmp)
@@ -302,6 +324,43 @@ class PVModule:
         self.temp_coeff_voc = float(temp_coeff_voc)
         self.temp_coeff_pmax = float(temp_coeff_pmax)
         self.temp_coeff_isc = float(temp_coeff_isc)
+        self.temp_coeff_vmp = (
+            float(temp_coeff_vmp) if temp_coeff_vmp is not None
+            else self.temp_coeff_pmax - self.temp_coeff_isc
+        )
+        self.max_system_voltage_v = float(max_system_voltage_v)
+        self.max_series_fuse_a = float(max_series_fuse_a) if max_series_fuse_a else None
+        # Bifacial modules: short-circuit current at the bifacial nameplate
+        # irradiance (IEC TS 60904-1-2). IEC 62548-1:2023 F.7 b) sets
+        # K_corr = I_SC_BNPI / I_SC_MOD when no simulation is available.
+        self.isc_bnpi = float(isc_bnpi) if isc_bnpi else None
+
+    @property
+    def k_corr(self):
+        if self.isc_bnpi and self.isc > 0:
+            return max(1.0, self.isc_bnpi / self.isc)
+        return 1.0
+
+    @property
+    def k_i(self):
+        """IEC 62548-1:2023 F.4: K_I = 1.25 x K_corr."""
+        return 1.25 * self.k_corr
+
+    @classmethod
+    def from_dict(cls, d):
+        """Build from an interface dict, ignoring unknown and empty fields."""
+        if not d:
+            return cls()
+        import inspect
+        names = set(inspect.signature(cls.__init__).parameters) - {"self"}
+        kw = {}
+        for k, v in d.items():
+            if k in names and v not in (None, ""):
+                kw[k] = v if k == "name" else float(v)
+        return cls(**kw)
+
+    def to_dict(self):
+        return dict(self.__dict__)
 
 
 def design_strings(array_kwp, module, mppt_v_min=200.0, mppt_v_max=800.0,
@@ -310,10 +369,24 @@ def design_strings(array_kwp, module, mppt_v_min=200.0, mppt_v_max=800.0,
     """
     Work out modules per string and number of strings.
 
-    The two temperature limits are applied as described in the module
-    docstring. `t_min_c` should be the record low ambient at the site, not
-    the average winter minimum - the limit is a safety rating and one cold
-    morning is enough to exceed it.
+    Three voltage limits apply (IEC 62548 / IEC TS 62257-7-1 4.1.9) and they
+    are not interchangeable:
+
+      * Voc at the lowest expected cell temperature must not exceed the
+        inverter's maximum DC input voltage NOR the module's maximum system
+        voltage. This is the safety limit; one cold sunrise with the
+        inverter tripped is enough to reach it.
+      * Vmp at the lowest cell temperature must stay below the top of the
+        MPPT window, or the inverter clips voltage on cold bright days.
+      * Vmp at the hottest cell temperature must stay above the bottom of
+        the MPPT window, or the array stops producing on hot days.
+
+    The second limit used to be checked against Voc instead of Vmp, which
+    shortened every string by roughly a fifth - more strings, more combiner
+    inputs and more DC cable than the design needed.
+
+    `t_min_c` should be the record low ambient at the site, not the average
+    winter minimum.
     """
     if array_kwp <= 0 or module.pmax_w <= 0:
         return None
@@ -322,12 +395,16 @@ def design_strings(array_kwp, module, mppt_v_min=200.0, mppt_v_max=800.0,
 
     # Voc rises as temperature falls below STC (25 C).
     voc_cold = module.voc * (1.0 + module.temp_coeff_voc * (t_min_c - 25.0))
+    vmp_cold = module.vmp * (1.0 + module.temp_coeff_vmp * (t_min_c - 25.0))
     # Vmp falls as cell temperature rises above STC.
-    vmp_hot = module.vmp * (1.0 + module.temp_coeff_pmax * (t_max_cell_c - 25.0))
+    vmp_hot = module.vmp * (1.0 + module.temp_coeff_vmp * (t_max_cell_c - 25.0))
 
-    max_per_string = int(math.floor(inverter_v_max / voc_cold)) if voc_cold > 0 else 0
+    v_limit = min(float(inverter_v_max),
+                  getattr(module, "max_system_voltage_v", inverter_v_max)
+                  or inverter_v_max)
+    max_per_string = int(math.floor(v_limit / voc_cold)) if voc_cold > 0 else 0
     max_per_string_mppt = (
-        int(math.floor(mppt_v_max / voc_cold)) if voc_cold > 0 else 0
+        int(math.floor(mppt_v_max / vmp_cold)) if vmp_cold > 0 else 0
     )
     min_per_string = int(math.ceil(mppt_v_min / vmp_hot)) if vmp_hot > 0 else 0
 
@@ -336,13 +413,12 @@ def design_strings(array_kwp, module, mppt_v_min=200.0, mppt_v_max=800.0,
     errors = []
     if upper < min_per_string:
         errors.append(
-            f"No valid string length exists: the coldest-day open-circuit "
-            f"limit allows at most {upper} modules per string, but the "
-            f"hottest-day MPPT minimum requires at least {min_per_string}. "
-            f"Use a module with a different voltage, or an inverter with a "
-            f"wider MPPT window."
+            f"No valid string length exists: the cold-day limits allow at "
+            f"most {upper} modules per string, but the hottest-day MPPT "
+            f"minimum requires at least {min_per_string}. Use a module with "
+            f"a different voltage, or an inverter with a wider MPPT window."
         )
-        modules_per_string = max(1, min_per_string)
+        modules_per_string = max(1, min(min_per_string, max(1, max_per_string)))
     else:
         # Longest permitted string minimises the number of strings, the DC
         # cabling and the combiner count.
@@ -350,20 +426,30 @@ def design_strings(array_kwp, module, mppt_v_min=200.0, mppt_v_max=800.0,
 
     n_strings = int(math.ceil(n_modules_total / modules_per_string))
     strings_per_mppt = int(math.ceil(n_strings / max(1, n_mppt)))
-    current_per_mppt = strings_per_mppt * module.isc * 1.25   # IEC 60364 factor
+    # IEC 62548-1:2023 F.4: circuit ratings use K_I x Isc (1.25 x K_corr).
+    k_i = getattr(module, "k_i", 1.25)
+    current_per_mppt = strings_per_mppt * module.isc * k_i
 
     if current_per_mppt > inverter_i_max_per_mppt:
         strings_per_input = max(
-            1, int(math.floor(inverter_i_max_per_mppt / (module.isc * 1.25)))
+            1, int(math.floor(inverter_i_max_per_mppt / (module.isc * k_i)))
         )
         needed_mppt = int(math.ceil(n_strings / strings_per_input))
         errors.append(
             f"Each MPPT input would carry {current_per_mppt:.1f} A "
-            f"(after the 1.25 safety factor) against a "
+            f"(after the K_I = {k_i:.2f} factor) against a "
             f"{inverter_i_max_per_mppt:.1f} A limit. This array needs at "
             f"least {needed_mppt} MPPT inputs at {strings_per_input} string(s) "
             f"each - use an inverter with more inputs, split the array across "
             f"more inverters, or add combiner boxes."
+        )
+
+    string_voc = voc_cold * modules_per_string
+    if string_voc > v_limit + 1e-6:
+        errors.append(
+            f"The string open-circuit voltage at {t_min_c:.0f} C is "
+            f"{string_voc:.0f} V, above the {v_limit:.0f} V limit of the "
+            f"inverter or the module's maximum system voltage."
         )
 
     actual_kwp = n_strings * modules_per_string * module.pmax_w / 1000.0
@@ -378,10 +464,12 @@ def design_strings(array_kwp, module, mppt_v_min=200.0, mppt_v_max=800.0,
         "mppt_inputs": n_mppt,
         "actual_capacity_kwp": actual_kwp,
         "requested_capacity_kwp": array_kwp,
-        "string_voc_cold_v": voc_cold * modules_per_string,
+        "string_voc_cold_v": string_voc,
+        "string_vmp_cold_v": vmp_cold * modules_per_string,
         "string_vmp_hot_v": vmp_hot * modules_per_string,
         "string_vmp_stc_v": module.vmp * modules_per_string,
         "string_isc_a": module.isc,
+        "string_imp_a": module.imp,
         "current_per_mppt_a": current_per_mppt,
         "limits": {
             "min_modules_per_string": min_per_string,
@@ -389,8 +477,12 @@ def design_strings(array_kwp, module, mppt_v_min=200.0, mppt_v_max=800.0,
             "design_t_min_c": t_min_c,
             "design_t_max_cell_c": t_max_cell_c,
             "inverter_v_max": inverter_v_max,
+            "module_max_system_voltage_v": getattr(module, "max_system_voltage_v", None),
+            "voltage_limit_v": v_limit,
             "mppt_window_v": [mppt_v_min, mppt_v_max],
         },
+        "k_i": k_i,
+        "standard": "IEC 62548-1:2023 / IEC TS 62257-7-1",
         "errors": errors,
         "valid": not errors,
     }
