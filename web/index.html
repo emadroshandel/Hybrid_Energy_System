@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>EnerSys — Hybrid Energy System Sizing</title>
+<title>HES — Hybrid Energy System Sizing</title>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -21,7 +21,7 @@
     <div class="brand">
       <span class="brand-mark">⚡</span>
       <div>
-        <div class="brand-name">EnerSys</div>
+        <div class="brand-name">HES</div>
         <div class="brand-sub">Hybrid system sizing</div>
       </div>
     </div>
@@ -316,8 +316,12 @@
               <label class="field"><span>Annual load growth
                 <i class="q" data-help="Demand growth per year over the project life. Zero assumes the site consumes exactly the same energy in year twenty as in year one. Combined with PV degradation this is what decides whether the design still meets the load at the end of its life, which is checked and reported separately.">?</i></span>
                 <input id="load-growth" type="number" step="0.005" value="0"></label>
-              <div class="field"><span>&nbsp;</span></div>
+              <label class="field"><span>Decommissioning cost
+                <i class="q" data-help="Disposal phase of the life-cycle cost (IEC 60300-3-3), as a fraction of capital cost, incurred at the end of the project.">?</i></span>
+                <input id="decommissioning" type="number" step="0.01" value="0"></label>
             </div>
+            <label class="check"><input id="salvage" type="checkbox" checked>
+              Credit the residual (salvage) value of equipment at the end of the project (IEC 60300-3-3)</label>
           </div>
 
           <div class="card">
@@ -383,6 +387,137 @@
 
       <!-- =========================== 7. DESIGN =========================== -->
       <section class="page" data-page="design" hidden>
+        <div class="card" id="design-inputs">
+          <h2>Design basis</h2>
+          <p class="help">The electrical design is checked against IEC 60364 (parts 4-41,
+            4-43, 5-52, 7-722), IEC 60909-0, IEC 62548-1, IEC 61724-1, IEC TS 62257,
+            IEC 62933-2-1, IEEE 1013 / 1562 / 1547.9 and NFPA 855. Leave a temperature
+            blank to take it from the site's hourly data.</p>
+          <div class="row-3">
+            <label class="field"><span>LV system voltage (V)</span>
+              <select id="dz-voltage"><option>230</option><option selected>400</option><option>415</option><option>480</option><option>690</option></select></label>
+            <label class="field"><span>Frequency (Hz)</span>
+              <select id="dz-freq"><option selected>50</option><option>60</option></select></label>
+            <label class="field"><span>Earthing system
+              <i class="q" data-help="Sets the SPD continuous voltage (IEC 60364-5-53): 1.1 U0 in TN and TT, the line voltage in IT.">?</i></span>
+              <select id="dz-earthing"><option>TN-S</option><option>TN-C-S</option><option>TT</option><option>IT</option></select></label>
+          </div>
+          <div class="row-3">
+            <label class="field"><span>Network fault level at PCC (kA)
+              <i class="q" data-help="Ask the network operator. Switchgear breaking capacity and cable short-circuit withstand are checked against the busbar fault, which adds the inverter and generator contributions to this (IEC 60364-4-43 434.5).">?</i></span>
+              <input id="dz-fault" type="number" step="0.5" value="10"></label>
+            <label class="field"><span>Lowest ambient (°C)
+              <i class="q" data-help="Record low. Sets the string open-circuit voltage limit (IEC TS 62257-7-1 4.1.9). Blank: coldest modelled hour less 5 °C.">?</i></span>
+              <input id="dz-tmin" type="number" step="1" placeholder="from site data"></label>
+            <label class="field"><span>Highest ambient (°C)
+              <i class="q" data-help="Cable derating, PV cable at ambient + 40 °C, generator derating. Blank: hottest modelled hour.">?</i></span>
+              <input id="dz-tmax" type="number" step="1" placeholder="from site data"></label>
+          </div>
+          <div class="row-2">
+            <label class="field"><span>Storage at a dwelling? (NFPA 855 Ch. 15)</span>
+              <select id="dz-dwelling"><option value="auto">Infer from the load</option><option value="true">Yes — one- or two-family dwelling</option><option value="false">No — commercial / utility</option></select></label>
+            <label class="field"><span>Storage location (NFPA 855 Table 15.5.2)</span>
+              <select id="dz-ess-loc">
+                <option value="utility_closet">Utility closet / storage space (40 kWh)</option>
+                <option value="attached_garage">Attached garage (100 kWh)</option>
+                <option value="exterior_wall" selected>On / within 0.9 m of an exterior wall (200 kWh)</option>
+                <option value="detached_structure">Detached garage or structure (200 kWh)</option>
+                <option value="detached_structure_3m">Detached structure ≥ 3 m from dwellings (600 kWh)</option>
+                <option value="outdoor_ground_3m">Outdoors on the ground ≥ 3 m away (600 kWh)</option>
+              </select></label>
+          </div>
+          <details>
+            <summary>Cable installation (IEC 60364-5-52)</summary>
+            <div class="row-3">
+              <label class="field"><span>Reference method
+                <i class="q" data-help="Table B.52.1. 'Automatic' uses C (clipped direct) up to 125 A and F (single-core trefoil on a ladder) above.">?</i></span>
+                <select id="dz-method">
+                  <option value="auto" selected>Automatic (C / F)</option>
+                  <option value="A1">A1 — conductors in conduit, insulated wall</option>
+                  <option value="A2">A2 — cable in conduit, insulated wall</option>
+                  <option value="B1">B1 — conductors in conduit on a wall</option>
+                  <option value="B2">B2 — cable in conduit on a wall</option>
+                  <option value="C">C — clipped direct</option>
+                  <option value="D1">D1 — in a buried duct</option>
+                  <option value="D2">D2 — buried direct</option>
+                  <option value="E">E — multi-core on perforated tray</option>
+                  <option value="F">F — single-core trefoil on ladder</option>
+                </select></label>
+              <label class="field"><span>Insulation</span>
+                <select id="dz-insulation"><option value="xlpe" selected>XLPE / EPR (90 °C)</option><option value="pvc">PVC (70 °C)</option></select></label>
+              <label class="field"><span>Conductor</span>
+                <select id="dz-material"><option value="copper" selected>Copper</option><option value="aluminium">Aluminium</option></select></label>
+              <label class="field"><span>Ground temperature (°C)</span>
+                <input id="dz-ground-t" type="number" step="1" value="20"></label>
+              <label class="field"><span>Soil thermal resistivity (K·m/W)</span>
+                <input id="dz-soil" type="number" step="0.1" value="2.5"></label>
+              <label class="field"><span>Group identical circuits
+                <i class="q" data-help="Identical circuits of one technology (inverter feeders, battery blocks) run together and take the grouping factor of Tables B.52.17-19.">?</i></span>
+                <select id="dz-group"><option value="true" selected>Yes — same route</option><option value="false">No — separate routes</option></select></label>
+            </div>
+          </details>
+          <details>
+            <summary>Short-circuit data (IEC 60909-0)</summary>
+            <div class="row-3">
+              <label class="field"><span>LV voltage tolerance (Table 1)</span>
+                <select id="dz-tol"><option value="lv6" selected>+6 % (cmax 1.05, cmin 0.95)</option><option value="lv10">+10 % (cmax 1.10, cmin 0.90)</option></select></label>
+              <label class="field"><span>Network R/X at the PCC</span>
+                <input id="dz-rx" type="number" step="0.05" value="0.1"></label>
+              <label class="field"><span>Generator x″d (pu)</span>
+                <input id="dz-xd" type="number" step="0.01" value="0.15"></label>
+              <label class="field"><span>PV / wind converter fault current (pu)
+                <i class="q" data-help="Manufacturer's maximum short-circuit contribution (IEC 60909-0 6.10.2). Typically 1.1-1.5.">?</i></span>
+                <input id="dz-kpv" type="number" step="0.1" value="1.2"></label>
+              <label class="field"><span>Battery inverter fault current (pu)</span>
+                <input id="dz-kbat" type="number" step="0.1" value="1.5"></label>
+            </div>
+          </details>
+          <details>
+            <summary>Stand-alone design (IEEE 1013 / IEEE 1562)</summary>
+            <div class="row-3">
+              <label class="field"><span>Days of autonomy</span>
+                <input id="dz-autonomy" type="number" step="0.5" value="2"></label>
+              <label class="field"><span>Design margin (×)</span>
+                <input id="dz-margin" type="number" step="0.05" value="1.15"></label>
+              <label class="field"><span>Load criticality</span>
+                <select id="dz-critical"><option value="false" selected>Non-critical (A:L ≥ 1.1)</option><option value="true">Critical (A:L ≥ 1.3)</option></select></label>
+            </div>
+          </details>
+          <details>
+            <summary>PV module datasheet</summary>
+            <div class="row-3">
+              <label class="field"><span>Pmax (W)</span><input id="dz-m-pmax_w" type="number" value="550"></label>
+              <label class="field"><span>Voc (V)</span><input id="dz-m-voc" type="number" step="0.01" value="49.9"></label>
+              <label class="field"><span>Isc (A)</span><input id="dz-m-isc" type="number" step="0.01" value="13.95"></label>
+              <label class="field"><span>Vmp (V)</span><input id="dz-m-vmp" type="number" step="0.01" value="41.8"></label>
+              <label class="field"><span>Imp (A)</span><input id="dz-m-imp" type="number" step="0.01" value="13.16"></label>
+              <label class="field"><span>β Voc (/°C)</span><input id="dz-m-temp_coeff_voc" type="number" step="0.0001" value="-0.0027"></label>
+              <label class="field"><span>γ Pmax (/°C)</span><input id="dz-m-temp_coeff_pmax" type="number" step="0.0001" value="-0.0035"></label>
+              <label class="field"><span>Max system voltage (V)</span><input id="dz-m-max_system_voltage_v" type="number" value="1500"></label>
+              <label class="field"><span>Max series fuse (A)
+                <i class="q" data-help="I_MOD_MAX_OCPR. Decides whether string fuses are needed (IEC 62548).">?</i></span><input id="dz-m-max_series_fuse_a" type="number" value="25"></label>
+              <label class="field"><span>Isc at BNPI, bifacial (A)
+                <i class="q" data-help="Bifacial modules only: short-circuit current at the bifacial nameplate irradiance. Sets K_corr and K_I (IEC 62548-1:2023 F.7).">?</i></span><input id="dz-m-isc_bnpi" type="number" step="0.01" placeholder="monofacial"></label>
+            </div>
+          </details>
+          <details>
+            <summary>Cable route lengths (m)</summary>
+            <div class="row-3">
+              <label class="field"><span>PV string (DC)</span><input data-len="pv_dc" type="number" value="60"></label>
+              <label class="field"><span>PV inverter AC</span><input data-len="pv_ac" type="number" value="25"></label>
+              <label class="field"><span>Battery PCS</span><input data-len="battery" type="number" value="15"></label>
+              <label class="field"><span>Wind turbine</span><input data-len="wind" type="number" value="80"></label>
+              <label class="field"><span>Generator</span><input data-len="genset" type="number" value="20"></label>
+              <label class="field"><span>Grid PCC</span><input data-len="grid" type="number" value="30"></label>
+              <label class="field"><span>Main load feeder</span><input data-len="load" type="number" value="40"></label>
+              <label class="field"><span>EV feeder</span><input data-len="ev" type="number" value="50"></label>
+              <label class="field"><span>EV connecting point</span><input data-len="ev_final" type="number" value="15"></label>
+              <label class="field"><span>MV collector</span><input data-len="mv_collector" type="number" value="300"></label>
+            </div>
+          </details>
+          <div style="margin-top:12px"><button id="btn-redesign" class="btn primary" type="button">Recalculate design</button>
+            <span id="design-status" class="status"></span></div>
+        </div>
         <div id="design-body"><p class="muted">Run a study and select a design first.</p></div>
       </section>
 
