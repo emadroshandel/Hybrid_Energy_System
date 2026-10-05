@@ -111,6 +111,8 @@ def component_npc(
     project_years,
     interest_rate,
     escalation_rate,
+    salvage=False,
+    decommissioning_fraction=0.0,
 ):
     """
     Net present cost of one component type.
@@ -131,13 +133,37 @@ def component_npc(
     om = n_units * om_cost_per_year * pwf2
     recurring = annual_recurring_cost * pwf3
 
+    # IEC 60300-3-3 life-cycle phases end with disposal. Two cash flows sit
+    # at the end of the project and both were missing:
+    #   residual (salvage) value - the remaining life of the last unit
+    #     installed, valued linearly at its replacement cost. Without it a
+    #     battery replaced in year 19 of a 20-year study is charged in full
+    #     and credited with nothing, which biases every comparison against
+    #     the technologies with short lives;
+    #   decommissioning - a fraction of the capital cost.
+    n = float(project_years)
+    disc_end = 1.0 / (1.0 + float(interest_rate)) ** n
+    salvage_value = 0.0
+    if salvage and life_years and life_years > 0:
+        installed_last = reps * float(life_years)
+        remaining = float(life_years) - (n - installed_last)
+        if remaining > 1e-9:
+            basis = replacement_cost if reps > 0 else capital_cost
+            salvage_value = (n_units * basis * remaining / float(life_years)
+                             * disc_end)
+    decommissioning = (n_units * capital_cost * float(decommissioning_fraction)
+                       * disc_end)
+
     return {
         "units": n_units,
         "capital": capital,
         "replacement": replacement,
         "om": om,
         "recurring": recurring,
-        "npc": capital + replacement + om + recurring,
+        "salvage": -salvage_value,
+        "decommissioning": decommissioning,
+        "npc": (capital + replacement + om + recurring - salvage_value
+                + decommissioning),
         "n_replacements": reps,
         "life_years": life_years,
         "pwf1": pwf1,
@@ -166,8 +192,13 @@ class EconomicParameters:
         unmet_load_penalty=0.0,
         emissions_price=0.0,
         load_growth_rate=0.0,
+        include_salvage=True,
+        decommissioning_fraction=0.0,
     ):
         self.project_years = int(project_years)
+        # IEC 60300-3-3 disposal phase: residual value and decommissioning.
+        self.include_salvage = bool(include_salvage)
+        self.decommissioning_fraction = float(decommissioning_fraction or 0.0)
         self.interest_rate = float(interest_rate)
         self.escalation_rate = float(escalation_rate)
         self.inflation_rate = float(inflation_rate)
@@ -209,6 +240,8 @@ class EconomicParameters:
             "unmet_load_penalty": self.unmet_load_penalty,
             "emissions_price": self.emissions_price,
             "load_growth_rate": self.load_growth_rate,
+            "include_salvage": self.include_salvage,
+            "decommissioning_fraction": self.decommissioning_fraction,
         }
 
 
@@ -220,6 +253,12 @@ def evaluate(system, result, econ):
     cost. `result` is a DispatchResult; `system` supplies the components and
     unit counts; `econ` the financial parameters.
     """
+    def _cnpc(*args, **kw):
+        kw.setdefault("salvage", getattr(econ, "include_salvage", False))
+        kw.setdefault("decommissioning_fraction",
+                      getattr(econ, "decommissioning_fraction", 0.0))
+        return component_npc(*args, **kw)
+
     n = econ.project_years
     ir = econ.interest_rate
     er = econ.escalation_rate
@@ -228,7 +267,7 @@ def evaluate(system, result, econ):
 
     # ------------------------------------------------------------------ PV
     if system.pv and system.n_pv > 0:
-        items["pv"] = component_npc(
+        items["pv"] = _cnpc(
             system.n_pv, system.pv.capital_cost, system.pv.replacement_cost,
             system.pv.om_cost_per_year, 0.0, system.pv.lifetime_years,
             n, ir, er,
@@ -236,7 +275,7 @@ def evaluate(system, result, econ):
 
     # ---------------------------------------------------------------- wind
     if system.wind and system.n_wind > 0:
-        items["wind"] = component_npc(
+        items["wind"] = _cnpc(
             system.n_wind, system.wind.capital_cost,
             system.wind.replacement_cost, system.wind.om_cost_per_year,
             0.0, system.wind.lifetime_years, n, ir, er,
@@ -248,7 +287,7 @@ def evaluate(system, result, econ):
             system.n_battery, tot["battery_discharge_kwh"]
         )
         life = max(1.0, min(life, float(n)))
-        items["battery"] = component_npc(
+        items["battery"] = _cnpc(
             system.n_battery, system.battery.capital_cost,
             system.battery.replacement_cost, system.battery.om_cost_per_year,
             0.0, life, n, ir, er,
@@ -260,14 +299,16 @@ def evaluate(system, result, econ):
         g = system.genset
         summary = g.annual_summary(system.n_genset, result.genset)
         run_h = summary["run_hours"]
-        life_years = (
+        # Overhaul life is consumed per running unit-hour; with unit
+        # commitment not every set runs every hour the bank does.
+        life_years = summary.get("years_to_overhaul") or (
             g.lifetime_hours / run_h if run_h > 0 else float(n)
         )
         life_years = max(1.0, min(life_years, float(n)))
         recurring = (
             summary["fuel_cost"] + summary["om_cost"] + summary["startup_cost"]
         )
-        items["genset"] = component_npc(
+        items["genset"] = _cnpc(
             system.n_genset, g.capital_cost, g.replacement_cost, 0.0,
             recurring, life_years, n, ir, er,
         )
@@ -280,14 +321,14 @@ def evaluate(system, result, econ):
         bill = system.grid.annual_cost(
             result.grid_import, result.grid_export, tot.get("months")
         )
-        items["grid"] = component_npc(
+        items["grid"] = _cnpc(
             1, 0.0, 0.0, 0.0, bill["net_cost"], float(n), n, ir, er,
         )
         items["grid"]["annual_bill"] = bill
 
     # ------------------------------------------------------------ chargers
     if system.ev and system.n_chargers > 0:
-        items["ev_infrastructure"] = component_npc(
+        items["ev_infrastructure"] = _cnpc(
             system.n_chargers,
             # `capital_cost` is the Asset-level field. The legacy shim also
             # exposes `capital_cost_per_charger`; reading that one first
@@ -299,7 +340,7 @@ def evaluate(system, result, econ):
 
     # ----------------------------------------------------- converters etc.
     for key, conv in (system.converters or {}).items():
-        items[key] = component_npc(
+        items[key] = _cnpc(
             1, conv.get("capital_cost", 0.0), conv.get("replacement_cost", 0.0),
             conv.get("om_cost_per_year", 0.0), 0.0,
             conv.get("lifetime_years", n), n, ir, er,
@@ -309,7 +350,7 @@ def evaluate(system, result, econ):
     penalty = 0.0
     if econ.unmet_load_penalty > 0 and tot["unmet_kwh"] > 0:
         annual = tot["unmet_kwh"] * econ.unmet_load_penalty
-        items["unmet_load_penalty"] = component_npc(
+        items["unmet_load_penalty"] = _cnpc(
             1, 0.0, 0.0, 0.0, annual, float(n), n, ir, er
         )
         penalty = items["unmet_load_penalty"]["npc"]
@@ -324,7 +365,7 @@ def evaluate(system, result, econ):
             )["emissions_kg"]
         if kg > 0:
             annual = kg / 1000.0 * econ.emissions_price
-            items["emissions_cost"] = component_npc(
+            items["emissions_cost"] = _cnpc(
                 1, 0.0, 0.0, 0.0, annual, float(n), n, ir, er
             )
 
