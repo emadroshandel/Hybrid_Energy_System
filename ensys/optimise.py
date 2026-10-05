@@ -594,8 +594,33 @@ class SizingResult:
         if pv is not None and getattr(pv, "degradation_per_year", 0.0):
             pv_factor = pv.yield_after_years(n)
 
+        # IEC 62933-2-1 5.2.4: the storage must still meet the specification
+        # at end of service life, so its initial capacity has to be planned
+        # against the faded capacity. Whenever in the project it happens, a
+        # bank that is replaced at end of life spends time at that capacity,
+        # so the final-year check is run with it.
+        bat_factor = 1.0
+        bat = system.battery
+        if bat is not None and system.n_battery > 0:
+            eol = getattr(bat, "eol_capacity_fraction", None)
+            if eol and 0.0 < float(eol) < 1.0:
+                bat_factor = float(eol)
+                import copy as _copy
+                faded = _copy.copy(bat)
+                faded.nominal_energy_kwh = bat.nominal_energy_kwh * bat_factor
+                # `with_decision` shares the registry with the study's base
+                # system, so the faded copy goes into a new registry. Writing
+                # it into the shared one would shrink the battery of every
+                # design evaluated afterwards.
+                from .assets import AssetRegistry
+                reg = AssetRegistry()
+                for k, a in system.registry.items():
+                    reg.add(faded if k == "battery" else a, k)
+                system.registry = reg
+
         load_factor = (1.0 + growth) ** n
-        if abs(pv_factor - 1.0) < 1e-9 and abs(load_factor - 1.0) < 1e-9:
+        if (abs(pv_factor - 1.0) < 1e-9 and abs(load_factor - 1.0) < 1e-9
+                and abs(bat_factor - 1.0) < 1e-9):
             return None
 
         res = dict(self.study.resources)
@@ -614,6 +639,11 @@ class SizingResult:
 
         first = rec.metrics
         notes = []
+        if bat_factor < 1.0:
+            notes.append(
+                f"Storage is simulated at {100 * bat_factor:.0f}% of nameplate "
+                f"capacity, its end-of-life value (IEC 62933-2-1 5.2.4)."
+            )
         if m.get("lpsp", 0.0) > first.get("lpsp", 0.0) + 1e-6:
             notes.append(
                 f"Unserved energy rises from {100 * first.get('lpsp', 0):.2f}% "
@@ -637,6 +667,7 @@ class SizingResult:
         return {
             "years": n,
             "pv_degradation_factor": pv_factor,
+            "battery_capacity_factor": bat_factor,
             "load_growth_factor": load_factor,
             "metrics": {k: v for k, v in m.items() if not k.startswith("_")},
             "year_one": {
