@@ -1,4 +1,4 @@
-/* EnerSys — transport bootstrap.
+/* HES — transport bootstrap.
  *
  * The same interface runs two ways:
  *
@@ -43,7 +43,7 @@ window.ENSYS = (function () {
 
   function diagnostics() {
     return [
-      'EnerSys diagnostics',
+      'HES diagnostics',
       `time     : ${new Date().toISOString()}`,
       `page     : ${location.href}`,
       `transport: ${api.mode}`,
@@ -204,7 +204,7 @@ window.ENSYS = (function () {
     'optim/__init__', 'optim/pareto', 'optim/base', 'optim/mopso',
     'optim/nsga2', 'optim/exhaustive', 'optim/algorithms', 'optim/screen',
     'sizing/__init__', 'sizing/inverter', 'sizing/cables',
-    'sizing/protection', 'sizing/voltage', 'sizing/design',
+    'sizing/protection', 'sizing/standards', 'sizing/iec60364_5_52', 'sizing/iec60909', 'sizing/voltage', 'sizing/design',
     'diagram/__init__', 'diagram/symbols', 'diagram/sheet',
     'diagram/topology', 'diagram/sld',
     'report/__init__',
