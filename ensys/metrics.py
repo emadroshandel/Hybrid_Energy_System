@@ -35,6 +35,54 @@ from __future__ import annotations
 import math
 
 
+def reliability_indices(load, unmet, threshold=0.01, hours_per_year=8760):
+    """
+    Supply-reliability indices for the site, one customer.
+
+    IEEE Std 1366-2022 defines a sustained interruption as one lasting more
+    than five minutes; at hourly resolution every hour in which the system
+    fails to serve more than `threshold` (1 %) of the demand is an hour of
+    interruption, and consecutive such hours are one interruption. For a
+    single customer the system indices reduce to:
+
+      SAIFI   interruptions per year
+      SAIDI   hours of interruption per year
+      CAIDI   SAIDI / SAIFI, mean duration of an interruption
+      ASAI    1 - SAIDI / 8760, the average service availability
+
+    IEC 61703:2016 terms for the same sequence of up and down states:
+    mean up time MUT = up hours / number of down states, mean down time
+    MDT = CAIDI, steady-state availability A = MUT / (MUT + MDT) = ASAI.
+
+    LOLE (hours with any unserved energy) and EENS (unserved kWh) follow the
+    usual generation-adequacy definitions.
+    """
+    n = min(len(load), len(unmet))
+    if n == 0:
+        return {"saifi": 0, "saidi_h": 0.0, "caidi_h": 0.0, "asai": 1.0,
+                "mut_h": float(hours_per_year)}
+    scale = hours_per_year / n
+    events = 0
+    down = 0
+    prev = False
+    for i in range(n):
+        out = unmet[i] > threshold * max(load[i], 1e-9) and unmet[i] > 1e-6
+        if out:
+            down += 1
+            if not prev:
+                events += 1
+        prev = out
+    saifi = events * scale
+    saidi = down * scale
+    return {
+        "saifi": saifi,
+        "saidi_h": saidi,
+        "caidi_h": (saidi / saifi) if saifi else 0.0,
+        "asai": 1.0 - down / n,
+        "mut_h": ((n - down) / events) if events else float(n),
+    }
+
+
 def compute(result, system=None, econ_result=None):
     """
     Build the full indicator set from a DispatchResult.
@@ -62,6 +110,8 @@ def compute(result, system=None, econ_result=None):
                 longest = run
         else:
             run = 0
+
+    rel = reliability_indices(result.load, result.unmet)
 
     # -------------------------------------------------------- renewables
     renewable_served = t["renewable_kwh"] - t["curtailed_kwh"] - t["exported_kwh"]
@@ -109,6 +159,14 @@ def compute(result, system=None, econ_result=None):
         "unmet_kwh": unmet,
         "unmet_hours": t["unmet_hours"],
         "longest_shortfall_hours": longest,
+        # IEEE Std 1366-2022 / IEC 61703:2016 (see reliability_indices)
+        "interruptions_per_year": rel["saifi"],
+        "interruption_hours_per_year": rel["saidi_h"],
+        "mean_interruption_hours": rel["caidi_h"],
+        "service_availability": rel["asai"],
+        "mean_up_time_h": rel["mut_h"],
+        "eens_kwh": unmet,
+        "lole_h": t["unmet_hours"],
         "ev_unmet_departures": t["ev_unmet_departures"],
         "reliability": 1.0 - lpsp,
         # renewables
@@ -253,6 +311,9 @@ def summarise_for_report(metrics, currency="USD"):
         "Loss of power supply probability": pct(metrics.get("lpsp")),
         "Unmet load": f"{metrics.get('unmet_kwh', 0):,.0f} kWh/yr",
         "Longest shortfall": f"{metrics.get('longest_shortfall_hours', 0)} h",
+        "Interruptions (SAIFI)": f"{metrics.get('interruptions_per_year', 0):.1f}/yr",
+        "Interruption hours (SAIDI)": f"{metrics.get('interruption_hours_per_year', 0):.1f} h/yr",
+        "Service availability (ASAI)": f"{100.0 * metrics.get('service_availability', 1.0):.3f}%",
         "Self-sufficiency": pct(metrics.get("self_sufficiency")),
         "Self-consumption": pct(metrics.get("self_consumption")),
         "Curtailment": pct(metrics.get("curtailment_rate")),
