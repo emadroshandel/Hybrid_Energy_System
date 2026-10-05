@@ -75,8 +75,20 @@ class BatteryStorage(Storage):
         "sodium_sulphur": (0.90, 0.10, 1.00, 4500, 15, 0.0000000),
     }
 
+    # Capacity at which the store is considered worn out, as a fraction of
+    # nameplate. IEC 62933-2-1 5.2.4 asks for the initial capacity to be
+    # planned so the system still meets its specification at end of service
+    # life; 80 % is the usual warranty end point for lithium and lead-acid,
+    # while flow batteries keep most of their capacity (the electrolyte, not
+    # an electrode, holds the energy).
+    EOL_CAPACITY = {
+        "flow_vanadium": 0.95, "flow_zinc_bromine": 0.90,
+    }
+
     def __init__(self, name=None, chemistry="lithium_lfp",
-                 nominal_energy_kwh=10.0, nominal_power_kw=5.0, **kw):
+                 nominal_energy_kwh=10.0, nominal_power_kw=5.0,
+                 pcs_efficiency=0.98, auxiliary_w_per_kwh=1.0,
+                 eol_capacity_fraction=None, dc_voltage_v=None, **kw):
         if chemistry in self.PRESETS:
             eff, lo, hi, cyc, cal, sd = self.PRESETS[chemistry]
             kw.setdefault("efficiency", eff)
@@ -87,17 +99,48 @@ class BatteryStorage(Storage):
             kw.setdefault("self_discharge_per_hour", sd)
             kw.setdefault("lifetime_years", cal)
             kw.setdefault("soc_initial", (lo + hi) / 2.0)
+
+        # IEC 62933-2-1 5.2.3 defines round-trip efficiency at the point of
+        # connection, through the power conversion system. The presets are
+        # cell/DC figures, and the dispatch exchanges energy with the AC
+        # bus, so the converter's one-way efficiency is folded in here.
+        # Without it an LFP bank cycled at 94 % round trip instead of the
+        # 88-90 % a real AC-coupled system achieves.
+        self.cell_efficiency = float(kw.get("efficiency", 0.95))
+        self.pcs_efficiency = float(pcs_efficiency or 1.0)
+        if not (0.5 < self.pcs_efficiency <= 1.0):
+            raise ValueError("pcs_efficiency must be in (0.5, 1]")
+        kw["efficiency"] = self.cell_efficiency * self.pcs_efficiency
+
+        # IEC 62933-2-1 5.2.6 auxiliary power: BMS, HVAC, fire detection.
+        # Drawn continuously whether or not the bank is working. Modelled
+        # as a standing loss on the stored energy, W per kWh of nameplate.
+        self.auxiliary_w_per_kwh = float(auxiliary_w_per_kwh or 0.0)
+        kw["self_discharge_per_hour"] = (
+            float(kw.get("self_discharge_per_hour", 0.0) or 0.0)
+            + self.auxiliary_w_per_kwh / 1000.0
+        )
+
         super().__init__(
             name=name or f"Battery ({chemistry.replace('_', ' ')})",
             nominal_energy_kwh=nominal_energy_kwh,
             nominal_power_kw=nominal_power_kw, **kw
         )
         self.chemistry = chemistry
+        self.eol_capacity_fraction = float(
+            eol_capacity_fraction if eol_capacity_fraction
+            else self.EOL_CAPACITY.get(chemistry, 0.80)
+        )
+        self.dc_voltage_v = float(dc_voltage_v) if dc_voltage_v else None
 
     def summary(self, n_units, series, dt_h=1.0):
         s = super().summary(n_units, series, dt_h)
         s["chemistry"] = self.chemistry
         s["round_trip_efficiency"] = self.round_trip_efficiency
+        s["round_trip_efficiency_dc"] = self.cell_efficiency ** 2
+        s["pcs_efficiency"] = self.pcs_efficiency
+        s["auxiliary_w_per_kwh"] = self.auxiliary_w_per_kwh
+        s["eol_capacity_fraction"] = self.eol_capacity_fraction
         s["c_rate"] = self.c_rate()
         return s
 
