@@ -689,11 +689,13 @@ class TestFirmSupplyMeritOrder(unittest.TestCase):
         g = Generator(rated_kw=50.0, fuel_price=1.0)
         full = dispatch._dispatchable_marginal_cost(g, 2, 100.0)
         # A request below the minimum load ratio is costed AT the minimum,
-        # because that is what the machine will actually produce.
+        # because that is what the machine will actually produce. With unit
+        # commitment the minimum is ONE running set at 30 % (15 kW), not
+        # the whole bank idling at 30 % (30 kW).
         part = dispatch._dispatchable_marginal_cost(g, 2, 5.0)
         self.assertGreater(part, full * 1.2)
         self.assertAlmostEqual(
-            part, dispatch._dispatchable_marginal_cost(g, 2, 30.0), places=9,
+            part, dispatch._dispatchable_marginal_cost(g, 2, 15.0), places=9,
             msg="below the minimum load the cost must be that of the "
                 "minimum, not of the smaller output that was asked for",
         )
