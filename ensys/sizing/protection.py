@@ -35,6 +35,7 @@ STANDARD_RATINGS = [
 I2_FACTOR = {
     "mcb": 1.45,       # IEC 60898 miniature circuit breaker
     "mccb": 1.30,      # IEC 60947-2 moulded case
+    "acb": 1.30,       # IEC 60947-2 air circuit breaker
     "fuse_gg": 1.60,   # IEC 60269 general purpose fuse
     "fuse_gpv": 1.45,  # IEC 60269-6 PV fuse
 }
@@ -45,6 +46,96 @@ TRIP_CURVES = {
     "C": (5, 10),     # general purpose, mixed loads
     "D": (10, 20),    # high inrush: motors, transformers
 }
+
+# Standard gPV fuse ratings, A (IEC 60269-6). String fuses come in finer
+# steps than distribution devices; using the 6/10/13/16/20/25 A breaker
+# series for them skips the 12 and 15 A fuses that are usually the right
+# answer for a 7-9 A module and pushes the rating out of the IEC 62548
+# window.
+GPV_FUSE_RATINGS = [1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 16, 20, 25, 30, 32,
+                    40, 50, 63, 80, 100, 125, 160, 200, 250, 315, 400]
+
+# Rated ultimate short-circuit breaking capacity typically available, kA.
+# IEC 60364-4-43 cl. 434.5.1: a device's breaking capacity shall not be
+# less than the prospective fault current where it is installed. A
+# miniature breaker on a 25 kA busbar is a fault that becomes an explosion.
+BREAKING_CAPACITY_KA = {
+    "mcb": 15.0,       # IEC 60898-1 Icn 10 kA / IEC 60947-2 Icu 15 kA ranges;
+                       # 6 kA domestic units exist - check the product
+    "mccb": 36.0,      # IEC 60947-2, common Icu
+    "acb": 65.0,       # IEC 60947-2 air circuit breaker
+    "fuse_gg": 80.0,   # IEC 60269 HRC fuse
+    "fuse_gpv": 30.0,  # IEC 60269-6 (DC, current-limited source anyway)
+}
+
+# Energy let through by a current-limiting device in the instantaneous
+# region, A^2 s. IEC 60364-4-43 cl. 434.5.2 allows the adiabatic check to
+# use the device's let-through I^2t instead of I^2 x t when the fault is
+# cleared in under 0.1 s. Values for MCBs are the energy-limiting class 3
+# limits of IEC 60898-1 Annex ZA at 10 kA; MCCBs and fuses are represented
+# by a half-cycle clearing time. A real design uses the manufacturer's
+# let-through curve - these are conservative stand-ins for it.
+MCB_CLASS3_I2T = [(16, 37_000.0), (32, 52_000.0)]
+CLEARING_TIME_S = {
+    "mcb": 0.010,
+    "fuse_gg": 0.010,
+    "fuse_gpv": 0.010,
+    "mccb": 0.020,     # instantaneous release, one cycle at 50 Hz
+    "acb": 0.300,      # short-time delay kept for selectivity
+}
+
+
+def let_through_i2t(device, rating_a, fault_current_a):
+    """
+    I^2 t the conductor must survive when this device clears a fault.
+
+    The adiabatic check used to multiply the prospective fault current by
+    a flat 0.4 s for every circuit. 0.4 s is the IEC 60364-4-41 maximum
+    DISCONNECTION time for a TN final circuit - a shock-protection limit,
+    not the time a breaker takes to clear a bolted fault - and applying it
+    to a 10 kA fault put a 50 mm2 cable on a 10 A circuit. A miniature
+    breaker clears in the first half cycle and limits the energy to tens of
+    kA^2 s; that, not I^2 x 0.4, is what the conductor sees.
+    """
+    i = float(fault_current_a or 0.0)
+    if i <= 0:
+        return 0.0
+    t = CLEARING_TIME_S.get(device, 0.4)
+    full = i * i * t
+    if device == "mcb":
+        for upto, limit in MCB_CLASS3_I2T:
+            if rating_a <= upto:
+                return min(full, limit)
+        return full
+    return full
+
+
+def check_breaking_capacity(device, fault_current_a):
+    """IEC 60364-4-43 434.5.1 - breaking capacity against prospective fault."""
+    cap_ka = BREAKING_CAPACITY_KA.get(device)
+    fault_ka = float(fault_current_a or 0.0) / 1000.0
+    ok = cap_ka is None or fault_ka <= cap_ka + 1e-9
+    return {
+        "device": device,
+        "breaking_capacity_ka": cap_ka,
+        "prospective_fault_ka": fault_ka,
+        "adequate": ok,
+    }
+
+
+def upgrade_for_breaking_capacity(device, fault_current_a):
+    """
+    The lightest device class whose breaking capacity covers the fault.
+
+    MCB -> MCCB -> ACB. Returned unchanged when it is already adequate.
+    """
+    order = ["mcb", "mccb", "acb"]
+    if device not in order:
+        return device
+    for d in order[order.index(device):]:
+        if check_breaking_capacity(d, fault_current_a)["adequate"]:
+            return d
+    return order[-1]
 
 
 def next_rating(current_a, ratings=None):
@@ -111,52 +202,112 @@ def select_overcurrent(design_current_a, cable_ampacity_a, device="mcb",
     }
 
 
-def select_pv_string_fuse(module_isc_a, n_strings_parallel, module_fuse_rating_a=None):
+def select_pv_string_fuse(module_isc_a, n_strings_parallel, module_fuse_rating_a=None,
+                          has_battery_on_dc_bus=False):
     """
-    String overcurrent protection per IEC 62548.
+    String overcurrent protection per IEC 62548 / IEC TS 62257-7-1 5.3.4.
 
-    Fuses are only required when three or more strings are in parallel: with
-    two strings, the maximum reverse current one string can drive into a
-    faulted other is one string's Isc, which the module withstands. Fitting
-    fuses to a two-string array is a common and harmless waste; omitting
-    them from a six-string array is neither.
+    The test is the module's own reverse-current withstand, not a fixed
+    string count. A faulted string can be back-fed by every other string in
+    parallel with it, so protection is needed when
+
+        (Np - 1) x Isc_mod  >  I_MOD_MAX_OCPR
+
+    where I_MOD_MAX_OCPR is the maximum series fuse rating on the module
+    datasheet. When it is not given, 1.8 x Isc is assumed - the typical
+    figure for crystalline modules (25 A for a 14 A module) - which makes
+    the rule reduce to "three or more strings", the familiar shorthand.
+
+    A battery on the same DC bus can drive far more than (Np-1) Isc into a
+    fault, so IEC 62257-7-1 requires string protection whenever one is
+    present, whatever the string count.
+
+    The rating is chosen inside the IEC 62548 window
+
+        1.5 x Isc_mod  <=  In  <=  2.4 x Isc_mod,   In <= I_MOD_MAX_OCPR
+
+    from the gPV fuse series (IEC 60269-6).
     """
-    required = n_strings_parallel >= 3
+    isc = float(module_isc_a)
+    np_ = max(1, int(n_strings_parallel))
+    ocpr = float(module_fuse_rating_a) if module_fuse_rating_a else 1.8 * isc
+    reverse = (np_ - 1) * isc
+
+    required = reverse > ocpr + 1e-9 or (has_battery_on_dc_bus and np_ >= 1)
     if not required:
         return {
             "required": False,
+            "strings_parallel": np_,
+            "max_reverse_current_a": reverse,
+            "module_max_series_fuse_a": ocpr,
             "reason": (
-                f"With {n_strings_parallel} string(s) in parallel, the maximum "
-                f"reverse fault current is below the module's own withstand. "
-                f"IEC 62548 does not require string fuses below three parallel "
-                f"strings."
+                f"With {np_} string(s) in parallel the worst reverse current "
+                f"into a faulted string is {reverse:.1f} A, within the "
+                f"module's {ocpr:.0f} A maximum series fuse rating. "
+                f"IEC 62548 does not require string overcurrent protection."
             ),
+            "standard": "IEC 62548 / IEC TS 62257-7-1 cl. 5.3.4",
         }
 
-    # 1.5 x Isc is the standard rule; the fuse must also be below the
-    # module's maximum series fuse rating.
-    computed = 1.5 * module_isc_a
-    rating = next_rating(computed)
-
+    lo, hi = 1.5 * isc, min(2.4 * isc, ocpr)
+    rating = None
+    for r in GPV_FUSE_RATINGS:
+        if lo - 1e-9 <= r <= hi + 1e-9:
+            rating = r
+            break
     warning = None
-    if module_fuse_rating_a and rating > module_fuse_rating_a:
+    if rating is None:
+        rating = next_rating(lo, GPV_FUSE_RATINGS)
         warning = (
-            f"The calculated fuse rating ({rating} A) exceeds the module's "
-            f"maximum series fuse rating ({module_fuse_rating_a} A). Reduce "
-            f"the number of parallel strings per combiner."
+            f"No standard gPV fuse lies between 1.5 x Isc ({lo:.1f} A) and "
+            f"the lower of 2.4 x Isc and the module's maximum series fuse "
+            f"({hi:.1f} A). The nearest is {rating} A; confirm the module's "
+            f"reverse-current rating with the manufacturer or reduce the "
+            f"number of parallel strings per combiner."
         )
 
     return {
         "required": True,
-        "device": "gPV fuse (IEC 60269-6)",
+        "device": "gPV fuse (IEC 60269-6), both poles",
         "rating_a": rating,
-        "calculated_a": computed,
-        "module_isc_a": module_isc_a,
-        "strings_parallel": n_strings_parallel,
-        "max_reverse_current_a": (n_strings_parallel - 1) * module_isc_a,
+        "calculated_a": lo,
+        "window_a": [lo, hi],
+        "module_isc_a": isc,
+        "module_max_series_fuse_a": ocpr,
+        "strings_parallel": np_,
+        "max_reverse_current_a": reverse,
+        "reason": (
+            "A battery shares the DC bus; its fault current is not limited "
+            "like a PV string's." if has_battery_on_dc_bus and reverse <= ocpr
+            else
+            f"{np_} strings in parallel can drive {reverse:.1f} A back into a "
+            f"faulted string, above the module's {ocpr:.0f} A rating."
+        ),
         "warning": warning,
         "dc_rated": True,
+        "standard": "IEC 62548 / IEC TS 62257-7-1 cl. 5.3.4",
     }
+
+
+def pv_string_cable_current(module_isc_a, n_strings_parallel, fuse=None,
+                            k_i=1.25):
+    """
+    Minimum current a PV string cable must carry, IEC 62548-1:2023 Table 5.
+
+      string protection provided   In of the string fuse
+      not provided, one string     K_I x Isc_mod
+      not provided, Npo strings    In(downstream) + K_I x Isc_mod x (Npo - 1)
+
+    with K_I = 1.25 x K_corr (Annex F.4; K_corr > 1 for bifacial modules).
+    With no downstream protection In is zero. The 2010 off-grid TS
+    (IEC TS 62257-7-1 Table 6) used 1.45 in place of K_I; the 2023 edition
+    of IEC 62548-1 supersedes it for this purpose.
+    """
+    isc = float(module_isc_a)
+    np_ = max(1, int(n_strings_parallel))
+    if fuse and fuse.get("required"):
+        return max(float(fuse["rating_a"]), k_i * isc)
+    return max(k_i * isc, k_i * isc * (np_ - 1))
 
 
 def select_rcd(circuit_type="general", has_transformerless_inverter=False):
@@ -190,14 +341,29 @@ def select_rcd(circuit_type="general", has_transformerless_inverter=False):
     }
 
 
+STANDARD_UCPV_V = [600, 800, 1000, 1100, 1200, 1500]
+
+
 def select_spd(location_type="main", exposure="medium", dc_side=False,
-               system_voltage_v=400, array_voltage_v=1000):
+               system_voltage_v=400, array_voltage_v=1000, earthing="TN-S"):
     """
-    Surge protective device selection per IEC 61643 and IEC 62305.
+    Surge protective device selection per IEC 61643 / IEC 60364-5-53 and
+    IEC 62305.
 
     PV arrays are extended outdoor conductors on a roof and are exposed to
     induced surges even without a direct strike, so the DC side needs its
     own SPD - one on the AC side does not protect the array.
+
+    Maximum continuous operating voltage:
+      * AC (IEC 60364-5-53 Table 534.2): Uc >= 1.1 x U0 line-to-earth in
+        TN and TT systems; Uc >= the line voltage U in an IT system, where
+        a first earth fault lifts the healthy phases to line voltage.
+      * DC (IEC 61643-31 / -32): Ucpv >= the array's maximum open-circuit
+        voltage, i.e. at the lowest expected cell temperature.
+
+    The AC figure used to be 1.1 x U x sqrt(2) / sqrt(3) x 1.5 - a peak
+    value with an unexplained 1.5 on it - which asked for a 540 V device on
+    a 230/400 V system. Uc is an RMS rating.
     """
     classes = {
         "main": ("Type 1+2", "12.5 kA (10/350)", "Origin of installation"),
@@ -207,11 +373,16 @@ def select_spd(location_type="main", exposure="medium", dc_side=False,
     cls, iimp, where = classes.get(location_type, classes["sub"])
 
     if dc_side:
+        need = float(array_voltage_v)
+        ucpv = next((u for u in STANDARD_UCPV_V if u >= need - 1e-9),
+                    STANDARD_UCPV_V[-1])
         return {
-            "class": "Type 2 DC",
+            "class": "Type 2 DC (PV)",
             "discharge_current": "20 kA (8/20)",
             "location": "PV combiner and inverter DC input",
-            "uc_v": array_voltage_v * 1.2,
+            "uc_v": float(ucpv),
+            "uc_required_v": need,
+            "standard": "IEC 61643-31 / IEC 61643-32",
             "notes": [
                 "Must be DC rated. An AC SPD on a DC circuit cannot clear the "
                 "follow current and will fail short.",
@@ -220,12 +391,23 @@ def select_spd(location_type="main", exposure="medium", dc_side=False,
             ],
         }
 
+    u_line = float(system_voltage_v)
+    u0 = u_line / math.sqrt(3.0) if u_line > 300 else u_line
+    if str(earthing).upper().startswith("IT"):
+        uc_need = u_line
+    else:
+        uc_need = 1.1 * u0
+    standard_uc = [150, 175, 275, 320, 385, 440, 600, 760]
+    uc = next((u for u in standard_uc if u >= uc_need - 1e-9), uc_need)
     return {
         "class": cls,
         "discharge_current": iimp,
         "location": where,
-        "uc_v": system_voltage_v * 1.1 * math.sqrt(2) / math.sqrt(3) * 1.5,
+        "uc_v": float(uc),
+        "uc_required_v": uc_need,
+        "earthing": earthing,
         "exposure": exposure,
+        "standard": "IEC 60364-5-53 / IEC 61643-11",
         "notes": [
             "Coordinate with the earthing arrangement: the SPD's protection "
             "level Up must be below the withstand voltage of the equipment "
