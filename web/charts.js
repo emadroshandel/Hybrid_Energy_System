@@ -22,8 +22,20 @@ const Chart = (() => {
   }
   const col = i => `var(${SERIES[i % SERIES.length]})`;
 
+  /* A degenerate range - a series that is flat, all zero, or not finite -
+     still has to produce a usable axis. The early return here used to give
+     back {max, step} and no `min`, so every consumer computing
+     (v - min) / (max - min) got NaN and drew a path of "M48.0,NaN". It
+     showed up on the state-of-charge chart of any design with no battery,
+     where the series is 365 zeros. Returning a real min fixes every chart
+     at once. */
   function nice(max, min = 0) {
-    if (!isFinite(max) || max === min) return { max: max || 1, step: (max || 1) / 4 };
+    if (!isFinite(max) || !isFinite(min) || max === min) {
+      const v = isFinite(max) ? max : 0;
+      const lo = Math.min(v, 0);
+      const hi = v > 0 ? v : (v < 0 ? 0 : 1);
+      return { min: lo, max: hi, step: (hi - lo) / 4 };
+    }
     const span = max - min;
     const mag = Math.pow(10, Math.floor(Math.log10(span)));
     const norm = span / mag;
