@@ -182,6 +182,8 @@ STRINGS = {
     "design.string_voltage": {"en": "String voltage", "fa": "ولتاژ رشته"},
     "design.mppt": {"en": "MPPT input", "fa": "ورودی ردیاب نقطه توان بیشینه"},
     "design.cable_schedule": {"en": "Cable schedule", "fa": "جدول کابل‌ها"},
+    "design.compliance": {"en": "Standards compliance", "fa": "انطباق با استانداردها"},
+    "design.basis": {"en": "Design basis", "fa": "مبانی طراحی"},
     "design.protection_schedule": {"en": "Protection schedule",
                                    "fa": "جدول تجهیزات حفاظتی"},
     "design.isolation": {"en": "Isolation and safety",
