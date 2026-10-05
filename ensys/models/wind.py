@@ -74,6 +74,15 @@ class WindTurbine(NonDispatchable):
         matching WTeff in the original MATLAB
     power_curve : optional list of (wind_speed_ms, power_kw) pairs
     model : CUBIC or CURVE
+    availability : fraction of hours the machine is available to generate.
+        IEC 61400-26-1 / 61400-28 time-based availability for modern
+        onshore turbines is typically 95-98 %; 0.97 is the default. The
+        study used to assume 100 % - every turbine running every hour of
+        its life.
+    electrical_loss : collection-system and transformer losses between
+        the turbine terminals and the bus, fraction (typically 1-3 %).
+    iec_class : the turbine's IEC 61400-1 class ("I", "II", "III", "S"),
+        used to check it against the site's hub-height mean wind speed.
     """
 
     def __init__(
@@ -89,6 +98,12 @@ class WindTurbine(NonDispatchable):
         power_curve=None,
         model=None,
         reference_height_m=10.0,
+        availability=0.97,
+        electrical_loss=0.02,
+        wake_loss=0.0,
+        iec_class=None,
+        regulation="pitch",
+        relative_humidity=0.5,
         capital_cost=0.0,
         replacement_cost=0.0,
         om_cost_per_year=0.0,
@@ -112,6 +127,15 @@ class WindTurbine(NonDispatchable):
         # Not the hub height: the two are usually different, and confusing
         # them is a 10-20% error in annual energy.
         self.reference_height_m = float(reference_height_m)
+        self.availability = float(availability if availability is not None else 1.0)
+        self.electrical_loss = float(electrical_loss or 0.0)
+        self.wake_loss = float(wake_loss or 0.0)
+        self.iec_class = iec_class or None
+        self.regulation = "stall" if str(regulation).lower() == "stall" else "pitch"
+        rh = float(relative_humidity if relative_humidity is not None else 0.5)
+        self.relative_humidity = rh / 100.0 if rh > 1.0 else rh
+        if not (0.0 < self.availability <= 1.0):
+            raise ValueError(f"{name}: availability must be in (0, 1]")
 
         if self.v_rated <= self.v_cutin:
             raise ValueError(
@@ -222,8 +246,8 @@ class WindTurbine(NonDispatchable):
         air_density=None,
         elevation_m=None,
         temperature_c=None,
-        availability=1.0,
-        wake_loss=0.0,
+        availability=None,
+        wake_loss=None,
     ):
         """
         Convert a measured wind-speed series into an hourly output series (kW).
@@ -241,17 +265,36 @@ class WindTurbine(NonDispatchable):
         )
 
         rho = air_density
+        rho_series = None
         if rho is None:
             rho = air_density_at(elevation_m or 0.0, temperature_c)
+            # IEC 61400-12-1:2022 Equation (12): density hour by hour from
+            # temperature, the pressure at hub height and humidity. A cold
+            # windy winter night and a hot still afternoon differ by 15 %
+            # in density; one annual mean density averages that away in
+            # exactly the hours the energy comes from.
+            if (isinstance(temperature_c, (list, tuple))
+                    and len(temperature_c) == len(vhub)):
+                p_hub = pressure_at((elevation_m or 0.0) + self.hub_height_m)
+                rho_series = [
+                    air_density_iec61400(t, p_hub, self.relative_humidity)
+                    for t in temperature_c
+                ]
+                rho = sum(rho_series) / len(rho_series)
         density_ratio = rho / RHO_STD
 
-        derate = float(availability) * (1.0 - float(wake_loss))
+        if availability is None:
+            availability = self.availability
+        if wake_loss is None:
+            wake_loss = self.wake_loss
+        derate = (float(availability) * (1.0 - float(wake_loss))
+                  * (1.0 - self.electrical_loss))
 
         out = []
         hours_at_rated = 0
         hours_below_cutin = 0
         hours_above_cutout = 0
-        for v in vhub:
+        for k, v in enumerate(vhub):
             if v < self.v_cutin:
                 hours_below_cutin += 1
                 out.append(0.0)
@@ -263,8 +306,16 @@ class WindTurbine(NonDispatchable):
             # IEC 61400-12 density correction: for a pitch-regulated machine
             # the curve is shifted in speed by the cube root of the density
             # ratio, which is more faithful than scaling power directly.
-            v_eff = v * (density_ratio ** (1.0 / 3.0))
-            p = self.power_at(v_eff) * derate
+            ratio = (rho_series[k] / RHO_STD) if rho_series else density_ratio
+            if self.regulation == "stall":
+                # Equation (13): a stall-regulated machine's power scales
+                # with density directly.
+                p = min(self.rated_kw, self.power_at(v) * ratio) * derate
+            else:
+                # Equation (14), pitch-regulated: the curve is read at the
+                # density-normalised speed.
+                v_eff = v * (ratio ** (1.0 / 3.0))
+                p = self.power_at(v_eff) * derate
             if p >= self.rated_kw * derate * 0.999:
                 hours_at_rated += 1
             out.append(p)
@@ -281,6 +332,8 @@ class WindTurbine(NonDispatchable):
             ),
             "air_density_kg_m3": rho,
             "density_ratio": density_ratio,
+            "density_model": ("IEC 61400-12-1 Eq. (12), hourly" if rho_series
+                              else "ISA, annual mean temperature"),
             "annual_energy_kwh": total,
             "capacity_factor": cf,
             "full_load_hours": total / self.rated_kw if self.rated_kw else 0.0,
@@ -288,6 +341,10 @@ class WindTurbine(NonDispatchable):
             "hours_below_cutin": hours_below_cutin,
             "hours_above_cutout": hours_above_cutout,
             "model": self.model,
+            "availability": float(availability),
+            "wake_loss": float(wake_loss),
+            "electrical_loss": self.electrical_loss,
+            "iec_class": self.iec_class,
         }
         return out, info
 
@@ -348,6 +405,28 @@ def air_density_at(elevation_m, temperature_c=None):
         t_k = float(temperature_c) + 273.15
 
     return pressure / (r_specific * t_k)
+
+
+def pressure_at(height_m):
+    """ISA barometric pressure, Pa, at a height above sea level."""
+    t0, p0, lapse = 288.15, 101325.0, 0.0065
+    return p0 * ((t0 - lapse * float(height_m or 0.0)) / t0) ** (
+        9.80665 * 0.0289644 / (8.31447 * lapse))
+
+
+def air_density_iec61400(temperature_c, pressure_pa, relative_humidity=0.5):
+    """
+    IEC 61400-12-1:2022 Equation (12):
+
+        rho = (1/T) (B/R0 - phi Pw (1/R0 - 1/Rw))
+
+    R0 = 287.05 J/kgK, Rw = 461.5 J/kgK, Pw = 0.0000205 exp(0.0631846 T).
+    """
+    t = float(temperature_c) + 273.15
+    r0, rw = 287.05, 461.5
+    pw = 0.0000205 * math.exp(0.0631846 * t)
+    phi = max(0.0, min(1.0, float(relative_humidity)))
+    return (1.0 / t) * (pressure_pa / r0 - phi * pw * (1.0 / r0 - 1.0 / rw))
 
 
 def weibull_fit(wind_speed):
