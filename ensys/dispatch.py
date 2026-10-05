@@ -108,14 +108,24 @@ def _dispatchable_marginal_cost(asset, n_units, output_kw, t=None, state=None):
     except (TypeError, ValueError):
         pass
 
+    # Hourly costs accrue on the units actually running. A bank that commits
+    # units one at a time (the genset model) says how many; anything else is
+    # treated as one block.
+    running = n_units
+    if hasattr(asset, "units_running"):
+        try:
+            running = asset.units_running(n_units, actual) or n_units
+        except (TypeError, ValueError):
+            running = n_units
+
     om_h = float(getattr(asset, "om_cost_per_hour", 0.0) or 0.0)
     if om_h:
-        cost += om_h * n_units / actual
+        cost += om_h * running / actual
 
     life_h = float(getattr(asset, "lifetime_hours", 0.0) or 0.0)
     repl = float(getattr(asset, "replacement_cost", 0.0) or 0.0)
     if life_h > 0 and repl > 0:
-        cost += repl * n_units / life_h / actual
+        cost += repl * running / life_h / actual
 
     return cost
 
