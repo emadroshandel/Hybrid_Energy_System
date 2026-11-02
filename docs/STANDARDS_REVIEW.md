@@ -33,6 +33,12 @@ A copy of the code as it was before this review is in
 | Solar PV cable-sizing design report | (Np − 1)·Isc > I_MOD_MAX_OCPR rule; fuse window 1.5–2.4 Isc; transformer-limited LV fault S/(√3·V·Z); 3 % accumulated DC+AC drop; ≤ 1.5 % cable losses |
 | IEC 61400-26-1 / IEC TS 61400-28 / IEC 61400-1 | Turbine availability; class versus hub-height mean wind speed |
 
+Not applicable to a sizing engine and therefore not used: the CIGRE
+transformer, overhead-line, cable-sheath, GIS and DGA brochures; IEC 61400-40
+(EMC), -50-4 (lidar), -4-1/-4-2 (drivetrain); IEC TS 62862 (solar thermal);
+the EPRI pollinator study. The NFPA 855 PDF is a scan; its relevant pages were
+read by OCR and Table 1.3 by eye.
+
 ---
 
 ## 2. Defects found and fixed
