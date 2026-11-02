@@ -26,7 +26,8 @@ in [Authorship](#authorship).*
 
 Python 3.9+, **standard library only**. No installation, no dependencies, no
 build step. It runs as a desktop window, a local server, over your network, or
-entirely client-side in a browser through Pyodide. 
+entirely client-side in a browser through Pyodide. Built to the same
+constraints as [Earthing_System](https://github.com/emadroshandel/Earthing_System).
 
 ---
 
@@ -48,6 +49,7 @@ entirely client-side in a browser through Pyodide.
 - **[Part 3 — A worked example, end to end](#part-3--a-worked-example-end-to-end)**
 - **[Part 4 — Under the hood](#part-4--under-the-hood)** — layout, API, extending it
 - [Relationship to the MATLAB study](#relationship-to-the-matlab-study)
+- [Engineering review](#engineering-review)
 - [Validation and tests](#validation-and-tests)
 - [Running it online](#running-it-online)
 - [Limits worth knowing](#limits-worth-knowing)
@@ -729,6 +731,7 @@ ensys/                  the engine, standard library only
   sizing/               inverter, cables, protection, voltage, design
   diagram/              symbols, sheet, topology, sld
 web/                    interface: index.html, app.js, boot.js, charts.js
+docs/                   the sizing and standards reviews
 docs/images/            the figures in this README
 examples/               three loadable worked projects
 tests/                  207 regression tests
@@ -794,7 +797,7 @@ downstream.
 ## Tests
 
 ```bash
-python -m unittest discover -s tests     # 207 tests
+python -m unittest discover -s tests     # 256 tests
 ```
 
 The ones that matter most are the conservation and coordination tests. A sizing
@@ -885,6 +888,15 @@ around it:
 
 ---
 
+## Engineering review
+
+[`docs/SIZING_REVIEW.md`](docs/SIZING_REVIEW.md) is the engineering review that
+preceded the current version: every defect found in the sizing chain, what it
+did to the answer, and how it was fixed. It is worth reading if you want to
+know what this program used to get wrong.
+
+---
+
 ## Validation and tests
 
 207 checks, no test dependencies, `python -m unittest discover -s tests`.
@@ -929,6 +941,15 @@ inside the browser. Every calculation happens on the visitor's machine, and no
 demand profile, site or result is uploaded anywhere, because there is nowhere
 to upload it to.
 
+Two differences from the local version:
+
+- **Resource retrieval still needs the internet**, and some providers do not
+  send the CORS headers a browser requires, so an online fetch can fail in the
+  browser while working perfectly from the local server. The *Monthly
+  averages* mode always works — which is why every worked example uses it.
+- **Long studies are slower.** Pyodide runs at roughly a third to a half of
+  native speed.
+
 ---
 
 ## Limits worth knowing
@@ -950,6 +971,15 @@ to upload it to.
 - Component ratings are matched to standard product sizes for screening. Verify
   against manufacturer data before procurement.
 - Synthetic weather has no cloud persistence and will undersize storage.
+- The standards checks on the Design page (see
+  [docs/STANDARDS_REVIEW.md](docs/STANDARDS_REVIEW.md)) cover what a sizing
+  tool can see from the design: ratings, voltages, currents, fault levels and
+  energy limits. Room construction, separation distances on site, detection,
+  ventilation and the network operator's settings are listed as obligations,
+  not verified.
+- Fault levels use typical source contributions (inverters 1.5 pu, generator
+  x"d = 0.15) and conductor withstand uses typical device let-through energy;
+  a final design uses the manufacturers' figures and an IEC 60909 study.
 - This is a design aid. It does not replace a qualified engineer's review, a
   site survey, or compliance sign-off against the local wiring rules.
 
@@ -1024,7 +1054,8 @@ matters as much as the code.
 
 ## Authorship
 
-This project was created by two authors with a clear division of labour: one is a conventional human, and the other is a highly capable artificial intelligence.
+This project was built by two authors with a clean division of labour, and
+the sidebar of the application states it on every page:
 
 > **Engineering and methods** — Emad Roshandel
 > **Software and interface** — Claude (Opus)
@@ -1042,6 +1073,28 @@ and it is not a supervisory role: it is the content.
 program. The Python package, the hourly dispatch, the optimisers, the web
 interface, the charts and diagrams, the test suite and these documents were
 written by Claude (Anthropic's Opus model), working from that direction.
+
+The division is worth stating plainly because the two halves failed in
+different ways and caught each other's failures, which is the whole argument
+for working this way.
+
+The resource providers returned data stamped in UTC while the solar position
+model ran in local time. The code was correct in every line, every test
+passed, and the photovoltaic yield was suppressed by 25% at one site and 86%
+at another. No amount of careful programming finds that — only someone who
+knows what a site in Shiraz should produce, looks at 1,179 kWh/kWp, and says
+that number is wrong. It was found by the engineer, not by the code.
+
+In the other direction, a cleanup of the interface script deleted a block of
+live function definitions along with the dead code it was meant to remove.
+The file still parsed, so every syntax check passed, and the page rendered
+empty. That was the software author's error, of a kind the engineering review
+cannot be expected to anticipate — and the fix was not only to restore the
+code but to add the test that now fails when a name is called and never
+defined, so the same mistake announces itself instead of shipping.
+
+Both are in `docs/SIZING_REVIEW.md` with the rest, because a tool whose
+failures are documented is easier to trust than one whose are not.
 
 What follows from this, for anyone reading the code: the physics and the
 economics have an author who is accountable for them, and they were checked
@@ -1157,6 +1210,25 @@ component: no part of it is implemented here.
   Evolutionary Computation* **8**(3), 256–279.
 - IEC 60364-7-712 and IEC 62548 for the photovoltaic electrical design;
   IEC 60287 for cable current ratings; IEC 60909 for fault levels.
+- IEC 60364-4-43 (overcurrent and short-circuit protection), IEC 60364-5-52
+  (minimum cross-sections), IEC 60364-5-53 (SPD selection), EN 50618 (PV
+  cable).
+- IEC TS 62257-5, -7-1, -7-3 and -9-2: protection, PV generators, generator
+  sets and microgrids for decentralised electrification.
+- BS EN IEC 62933-2-1:2018, electrical energy storage unit parameters;
+  IEEE Std 2030.2.1-2019, BESS design; IEEE Std 1547.9-2022, interconnection
+  of energy storage; NFPA 855:2026 and UL 9540:2023, ESS installation and
+  listing; IEC 63056 and IEC 62619, lithium cells for stationary storage.
+- IEC 61400-1 wind turbine classes; IEC 61400-26-1 / IEC TS 61400-28
+  availability and through-life management.
+- IEC 60364-5-52:2009 Annex B (current-carrying capacity by installation
+  method), IEC 60909-0:2026 (short-circuit currents), IEC 60364-4-41
+  (automatic disconnection), IEC 60364-7-722 (EV supply), IEC 62548-1:2023
+  (PV arrays), IEC 61724-1:2021 (PV performance), IEC 61400-12-1:2022 (air
+  density), IEEE 1013-2019 and IEEE 1562-2021 (stand-alone sizing),
+  IEEE 1366-2022 and IEC 61703:2016 (reliability), IEC 60300-3-3 (life-cycle
+  costing).
 - Pfenninger, S. & Staffell, I. (2016). Long-term patterns of European PV
   output. *Energy* **114**, 1251–1265, and the companion wind paper — the
   basis of the Renewables.ninja series.
+

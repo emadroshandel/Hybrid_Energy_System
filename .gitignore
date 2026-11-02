@@ -1,0 +1,55 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+
+# Test and tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# EnerSys run-time output
+startup_log.txt
+outputs/
+*.cache
+.ensys_cache/
+
+# Working files that do not belong in the repository
+Claude outputs/
+*.tar.gz
+*.zip
+
+# Editors and operating systems
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Superseded by the HES rename. These are the pre-rename launchers and
+# tutorial; delete them from your working folder when convenient. Listed
+# here so a stale copy can never be committed by accident.
+START_EnerSys.bat
+START_EnerSys.py
+Run EnerSys (desktop).bat
+docs/EnerSys_Tutorial.docx
+docs/EnerSys_Tutorial.pdf
+
+# Kept out of the public repository
+docs/HES_Tutorial.docx
+docs/HES_Tutorial.pdf
+PUBLISH.md
+*.xlsx
+skills-lock.json
+.claude/
+_backup*/
+_claude_scratch/
