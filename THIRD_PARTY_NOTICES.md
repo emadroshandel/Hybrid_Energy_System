@@ -88,6 +88,16 @@ account and an API token, which you supply; HES ships none.
 
 ---
 
+## three.js (bundled)
+
+`web/vendor/three/three-lite.js` is a tree-shaken, minified subset of
+**three.js r187** (including `OrbitControls`), Copyright 2010-2026 Three.js
+Authors, released under the MIT licence; the full licence text is in
+`web/vendor/three/LICENSE`. It is used only by the optional 3-D Pareto view
+(`web/front3d.js`) and is loaded on demand, so the application still starts
+and runs offline without it. `web/vendor/three/entry.js` lists exactly what
+the bundle contains and the one command that rebuilds it.
+
 ## Standards and published methods
 
 HES implements calculation methods published in the open literature and
