@@ -6,14 +6,6 @@ checks a reviewer would make with those standards in hand are now run on every
 design and listed on the **Design** page (and in the exported report) under
 **Standards compliance**.
 
-All 256 tests pass: the 207 that existed before, and 49 in
-`tests/test_standards.py`, each named after the clause it enforces. Section 5
-covers the second pass, against the documents added in
-`References/New References/`.
-
-A copy of the code as it was before this review is in
-`_backup_before_standards_review_2026-10-02/`.
-
 ---
 
 ## 1. Which references bear on a sizing tool
