@@ -1,0 +1,72 @@
+cff-version: 1.2.0
+title: "HES: multi-objective sizing of hybrid renewable energy systems"
+message: "If you use this software in academic work, please cite it as below."
+type: software
+version: "0.1.0"
+authors:
+  - family-names: Roshandel
+    given-names: Emad
+license: GPL-3.0-or-later
+repository-code: "https://github.com/emadroshandel/Hybrid_Energy_System"
+abstract: >-
+  An open-source application for the optimal sizing of hybrid renewable
+  energy systems. Twenty generation, storage and demand technologies are
+  dispatched hour by hour over a full year and sized by multi-objective
+  optimisation, returning a Pareto front rather than a single design. The
+  modelling chain comprises the NOAA solar position, the Erbs decomposition,
+  the Hay-Davies transposition and the Faiman cell temperature for the
+  photovoltaic path; shear, air-density and power-curve models for wind; a
+  symmetric-efficiency state-of-charge model with throughput and calendar
+  ageing for storage; an affine fuel curve with a minimum load ratio for
+  dispatchable plant; and a two-state Markov representation of supply
+  interruptions. Net present cost, levelised cost of energy, loss of power
+  supply probability, renewable fraction and emissions are evaluated on a
+  present-worth basis, and a plausibility layer checks every input and every
+  result against published ranges. Runs locally as a desktop or browser
+  application, or entirely in the browser via Pyodide.
+references:
+  - type: conference-paper
+    title: "Energy management in a commercial-site equipped with electric vehicle charging stations, wind turbines, and battery energy storages"
+    authors:
+      - family-names: Hosseinzadeh
+        given-names: Javad
+      - family-names: Roshandel
+        given-names: Emad
+      - family-names: Attar
+        given-names: Hani
+    collection-title: "2023 2nd International Engineering Conference on Electrical, Energy, and Artificial Intelligence (EICEEAI)"
+    publisher:
+      name: IEEE
+    year: 2023
+    start: 1
+    end: 6
+    url: "https://ieeexplore.ieee.org/abstract/document/10590218/"
+    notes: "The wind-battery-EV-grid sizing study that this software generalises."
+  - type: article
+    title: "Fault detection and classification in smart grids using augmented K-NN algorithm"
+    authors:
+      - family-names: Hosseinzadeh
+        given-names: Javad
+      - family-names: Masoodzadeh
+        given-names: Farokh
+      - family-names: Roshandel
+        given-names: Emad
+    journal: "SN Applied Sciences"
+    volume: 1
+    issue: 12
+    start: 1627
+    year: 2019
+    doi: "10.1007/s42452-019-1672-0"
+    url: "https://link.springer.com/article/10.1007/s42452-019-1672-0"
+    notes: "Related smart-grid work by the author; background rather than a component."
+keywords:
+  - hybrid renewable energy systems
+  - optimal sizing
+  - multi-objective optimisation
+  - Pareto front
+  - particle swarm optimisation
+  - microgrid
+  - energy storage
+  - levelised cost of energy
+  - loss of power supply probability
+  - techno-economic analysis
