@@ -37,7 +37,284 @@ const App = (() => {
   function status(el, msg, kind) {
     const n = typeof el === 'string' ? $(el) : el;
     n.className = 'status' + (kind ? ' ' + kind : '');
+    // Errors interrupt (role=alert); everything else is announced politely.
+    // The role is set before the text so the change is spoken (WCAG 4.1.3).
+    n.setAttribute('role', kind === 'err' ? 'alert' : 'status');
     n.textContent = msg || '';
+  }
+
+  /* One polite announcer for events that have no visible status line of
+     their own: a page change, a design selected on the front. */
+  function announce(msg) {
+    const a = $('#announce');
+    if (!a) return;
+    a.textContent = '';
+    setTimeout(() => { a.textContent = msg; }, 30);
+  }
+
+  const reducedMotion = () =>
+    window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  /* Segmented controls are toggle-button groups: the visual "active" class
+     and aria-pressed always move together. */
+  function segSelect(host, btn) {
+    $$(`#${host.id} .seg-btn`).forEach(x => {
+      x.classList.toggle('active', x === btn);
+      x.setAttribute('aria-pressed', x === btn ? 'true' : 'false');
+    });
+  }
+
+  /* ----------------------------------------------------- busy buttons */
+  /* Any action that waits on the engine says so on the button itself, and
+     cannot be fired twice while it is still running. */
+  function busy(sel, on, label) {
+    const b = typeof sel === 'string' ? $(sel) : sel;
+    if (!b) return;
+    if (on) {
+      if (!b.dataset.idle) b.dataset.idle = b.textContent;
+      b.disabled = true;
+      b.setAttribute('aria-busy', 'true');
+      if (label) b.textContent = label;
+    } else {
+      b.disabled = false;
+      b.removeAttribute('aria-busy');
+      if (b.dataset.idle) { b.textContent = b.dataset.idle; delete b.dataset.idle; }
+    }
+  }
+
+  /* ---------------------------------------------- inline field checks */
+  /* Every number field is checked as it is typed, next to the field, and
+     again before anything is sent to the engine. Fractions show their
+     percentage beside them, because "8" typed for an 8 % discount rate is
+     the commonest wrong input in an economics form and nothing else on the
+     screen would catch it. */
+  const pageOf = el => {
+    const s = el.closest('.page');
+    const i = s ? PAGES.findIndex(p => p.id === s.dataset.page) : -1;
+    return i;
+  };
+  const labelOf = el => {
+    const f = el.closest('.field, label');
+    const sp = f && f.querySelector(':scope > span');
+    if (!sp) return el.getAttribute('aria-label') || el.id || 'A field';
+    const c = sp.cloneNode(true);
+    c.querySelectorAll('.q, .sr-only').forEach(x => x.remove());
+    const tech = el.closest('.card') && el.closest('.card').querySelector('h2');
+    const name = c.textContent.replace(/\s+/g, ' ').trim();
+    return el.dataset.c && tech ? `${tech.textContent.trim()}: ${name}` : name;
+  };
+
+  function slot(el, cls) {
+    const host = el.closest('.field, label') || el.parentElement;
+    let n = host.querySelector(':scope > .' + cls);
+    if (!n) {
+      n = document.createElement('span');
+      n.className = cls;
+      n.id = cls + '-' + (++helpSeq);
+      if (cls === 'field-err') n.setAttribute('aria-live', 'polite');
+      host.appendChild(n);
+      const prev = el.getAttribute('aria-describedby');
+      el.setAttribute('aria-describedby', (prev ? prev + ' ' : '') + n.id);
+    }
+    return n;
+  }
+
+  function checkField(el) {
+    if (!el || el.type !== 'number') return true;
+    const raw = el.value.trim();
+    const frac = el.hasAttribute('data-frac');
+    let msg = '';
+    if (raw === '') {
+      if (!el.placeholder && !el.disabled) msg = 'Enter a number.';
+    } else {
+      const v = Number(raw);
+      const lo = el.min !== '' ? Number(el.min) : -Infinity;
+      const hi = el.max !== '' ? Number(el.max) : Infinity;
+      if (!Number.isFinite(v)) msg = 'Enter a number.';
+      else if (frac && v > 1 && v <= 100 && hi <= 1)
+        msg = `Enter this as a fraction: ${v} % is ${+(v / 100).toFixed(4)}.`;
+      else if (v < lo) msg = `Must be at least ${lo}.`;
+      else if (v > hi) msg = `Must be no more than ${hi}.`;
+    }
+    if (frac) {
+      const v = Number(raw);
+      slot(el, 'field-hint').textContent =
+        raw !== '' && Number.isFinite(v) && !msg ? `= ${+(v * 100).toFixed(3)} %` : '';
+    }
+    const err = el.closest('.field, label') ? slot(el, 'field-err') : null;
+    if (err) err.textContent = msg;
+    if (msg) el.setAttribute('aria-invalid', 'true'); else el.removeAttribute('aria-invalid');
+    return !msg;
+  }
+
+  function wireFieldChecks(root) {
+    (root || document).querySelectorAll('#pages input[type=number]').forEach(el => {
+      if (el.dataset.checked) return;
+      el.dataset.checked = '1';
+      el.setAttribute('inputmode', 'decimal');
+      if (el.hasAttribute('data-frac')) checkField(el);
+    });
+  }
+
+  /* Every invalid field that would take part in the request, in page
+     order. Fields inside an excluded technology do not count. */
+  function invalidFields(pageIds) {
+    const want = new Set(pageIds);
+    return $$('#pages input[type=number]').filter(el => {
+      const s = el.closest('.page');
+      if (!s || !want.has(s.dataset.page)) return false;
+      if (el.disabled || el.closest('fieldset:disabled') || el.closest('[hidden]:not(.page)')) return false;
+      return !checkField(el);
+    });
+  }
+
+  /* Refuses to go on, lists what is wrong as links that go to the field,
+     and puts the keyboard on the first one. */
+  function blockOnInvalid(statusSel, pageIds) {
+    const bad = invalidFields(pageIds);
+    if (!bad.length) return false;
+    const n = $(statusSel);
+    n.className = 'status err';
+    n.setAttribute('role', 'alert');
+    n.innerHTML = `${bad.length === 1 ? 'One field needs' : bad.length + ' fields need'} correcting first:`
+      + '<ul class="check-list">' + bad.slice(0, 8).map((el, k) =>
+        `<li><a href="#" data-fix="${k}">${escapeHtml(labelOf(el))}</a>`
+        + ` <span class="muted">(${PAGES[pageOf(el)].title})</span></li>`).join('')
+      + (bad.length > 8 ? `<li>…and ${bad.length - 8} more</li>` : '') + '</ul>';
+    n.querySelectorAll('[data-fix]').forEach(a => a.addEventListener('click', e => {
+      e.preventDefault();
+      const el = bad[+a.dataset.fix];
+      show(pageOf(el), { keepFocus: true });
+      el.focus(); el.select && el.select();
+    }));
+    if (pageOf(bad[0]) === S.page) bad[0].focus();
+    return true;
+  }
+
+  /* --------------------------------------------------- empty states */
+  /* Pages that only have something to show once a design is selected say
+     what is still missing and take you to it, instead of a grey line. */
+  function emptyStates() {
+    const steps = [
+      ['Resource data retrieved', S.resourceLoaded, 0],
+      ['Demand profile loaded', S.loadLoaded, 1],
+      ['Study run', S.front.length > 0, 4],
+      ['A design selected on the Pareto front', S.selected != null && !!S.detail, 4],
+    ];
+    const next = steps.find(s => !s[1]);
+    const html = what => `<div class="card empty">
+        <div class="empty-icon" aria-hidden="true">◇</div>
+        <h2>Nothing to show yet</h2>
+        <p>${what} appear here once a design has been selected on the Pareto front.</p>
+        <ul class="steps">${steps.map(s => `<li class="${s[1] ? 'ok' : ''}">`
+          + `<span class="sr-only">${s[1] ? 'Done: ' : 'To do: '}</span>${s[0]}</li>`).join('')}</ul>
+        <div>${next ? `<button type="button" class="btn primary" data-goto="${next[2]}">`
+          + `Go to ${PAGES[next[2]].title}</button>` : ''}</div>
+      </div>`;
+    if (!S.detail) {
+      const r = $('#results-body'), d = $('#design-body'), g = $('#diagram-body');
+      if (r) r.innerHTML = html('The energy balance, costs and reliability of the chosen design');
+      if (d) d.innerHTML = html('The converter, cable and protection schedules and the standards checks');
+      if (g) g.innerHTML = html('The single-line and three-line diagrams');
+    }
+  }
+
+  /* ------------------------------------------- selected-design context */
+  /* Results, Design and Diagrams all describe ONE design out of the front.
+     Saying which, and letting the user step to its neighbours without going
+     back to the chart, keeps that from having to be remembered. */
+  function designBar() {
+    const i = S.selected, n = S.front.length;
+    if (i == null || !S.front[i]) return '';
+    const rec = S.frontR && i === S.frontR.recommended_index;
+    return `<div class="design-bar" role="region" aria-label="Selected design">
+      <div><div class="db-title">Design ${i + 1} of ${n} ${rec ? '<span class="badge rec">Recommended</span>' : ''}</div>
+        <div class="db-sub">${escapeHtml(describe(S.front[i]))}</div></div>
+      <div class="db-actions">
+        <button type="button" class="btn ghost" data-design-step="-1" ${i === 0 ? 'disabled' : ''}
+          aria-label="Previous design on the front">‹ Previous</button>
+        <button type="button" class="btn ghost" data-design-step="1" ${i === n - 1 ? 'disabled' : ''}
+          aria-label="Next design on the front">Next ›</button>
+        <button type="button" class="btn" data-goto="4">Compare on the Pareto front</button>
+      </div></div>`;
+  }
+
+  function wireContext() {
+    $('#pages').addEventListener('click', e => {
+      const g = e.target.closest('[data-goto]');
+      if (g) { show(+g.dataset.goto); return; }
+      const st = e.target.closest('[data-design-step]');
+      if (st && S.selected != null) {
+        const host = st.closest('.page');
+        selectDesign(S.selected + +st.dataset.designStep).then(() => {
+          // The bar was rebuilt; keep the keyboard on the same button.
+          const again = host && host.querySelector(`[data-design-step="${st.dataset.designStep}"]`);
+          if (again && !again.disabled) again.focus();
+        });
+      }
+    });
+  }
+
+  /* --------------------------------------------- report page summary */
+  function reportSummary() {
+    const host = $('#report-summary');
+    if (!host) return;
+    const loc = location();
+    const d = S.detail;
+    host.innerHTML = `<div><b>Site</b>${escapeHtml(loc.name || '—')}</div>`
+      + `<div><b>Design</b>${d && S.selected != null
+          ? `Design ${S.selected + 1}: ${escapeHtml(describe(S.front[S.selected]))}`
+          : 'None selected yet — the report, diagrams and CSV need one'}</div>`
+      + (d ? `<div><b>Net present cost</b>${Chart.money(d.economics.npc, d.economics.currency)}`
+          + ` · ${(d.metrics.renewable_fraction * 100).toFixed(0)}% renewable</div>` : '')
+      + `<div><b>Unsaved work</b>${S.dirty ? 'Yes — save the project to keep it' : 'None'}</div>`;
+  }
+
+  /* ------------------------------------------- keyboard and safety net */
+  function wireShortcuts() {
+    document.addEventListener('keydown', e => {
+      const mod = e.ctrlKey || e.metaKey;
+      if (!mod || e.altKey) return;
+      const k = e.key.toLowerCase();
+      if (k === 's') { e.preventDefault(); saveProject(); }
+      else if (k === 'o') { e.preventDefault(); $('#project-open').click(); }
+      else if (e.key === 'Enter' && PAGES[S.page].id === 'optimise' && !$('#btn-run').disabled) {
+        e.preventDefault(); runStudy();
+      }
+    });
+
+    // A scroll wheel over a focused number field changes its value in most
+    // browsers, silently. Losing focus first lets the page scroll instead.
+    document.addEventListener('wheel', e => {
+      const t = e.target;
+      if (t && t.type === 'number' && t === document.activeElement) t.blur();
+    }, { passive: true });
+
+    $('#pages').addEventListener('input', e => {
+      if (e.target.matches('input, select, textarea') && e.target.type !== 'file') S.dirty = true;
+      if (e.target.type === 'number') checkField(e.target);
+    });
+    $('#pages').addEventListener('change', e => {
+      if (e.target.type === 'number') checkField(e.target);
+    });
+
+    // Leaving with a study on screen and nothing saved loses the lot.
+    window.addEventListener('beforeunload', e => {
+      if (S.dirty && (S.loadLoaded || S.front.length)) { e.preventDefault(); e.returnValue = ''; }
+    });
+  }
+
+  /* One currency, not two that can disagree: the cost basis and the
+     economics field follow each other. */
+  function wireCurrency() {
+    const sel = $('#cost-currency'), txt = $('#currency');
+    if (!sel || !txt) return;
+    sel.addEventListener('change', () => { if (sel.value) txt.value = sel.value; });
+    txt.addEventListener('change', () => {
+      txt.value = txt.value.trim().toUpperCase();
+      if ([...sel.options].some(o => o.value === txt.value)) sel.value = txt.value;
+    });
+    if (sel.value) txt.value = sel.value;
   }
 
   /* ------------------------------------------------------------ startup */
@@ -85,7 +362,12 @@ const App = (() => {
     wireChrome();
     wireTips();
     wireBanner();
-    show(0);
+    wireShortcuts();
+    wireContext();
+    prepareA11y();
+    wireFieldChecks();
+    emptyStates();
+    show(0, { initial: true });
 
     let info;
     try {
@@ -114,7 +396,26 @@ const App = (() => {
     fillPresets(info.presets);
     buildComponents();
     buildObjectives(info.presets.objectives);
+    enhanceHelp(document);
+    wireCurrency();
+    wireFieldChecks();
+    S.dirty = false;
     banner(null);
+  }
+
+  function prepareA11y() {
+    if (!$('#announce')) {
+      const a = document.createElement('div');
+      a.id = 'announce'; a.className = 'sr-only';
+      a.setAttribute('aria-live', 'polite'); a.setAttribute('role', 'status');
+      document.body.appendChild(a);
+    }
+    $$('.status').forEach(n => { if (!n.getAttribute('role')) n.setAttribute('role', 'status'); });
+    $$('.seg').forEach(g => $$(`#${g.id} .seg-btn`).forEach(b =>
+      b.setAttribute('aria-pressed', b.classList.contains('active') ? 'true' : 'false')));
+    const more = $('#btn-more-tech');
+    if (more) { more.setAttribute('aria-expanded', 'false'); more.setAttribute('aria-controls', 'components-extra'); }
+    enhanceHelp(document);
   }
 
   function buildNav() {
@@ -124,25 +425,46 @@ const App = (() => {
       const b = document.createElement('button');
       b.className = 'nav-item';
       b.type = 'button';
-      b.innerHTML = `<span class="nav-num">${i + 1}</span><span>${p.title}</span>`;
+      b.innerHTML = `<span class="nav-num" aria-hidden="true">${i + 1}</span><span>${p.title}</span>`;
+      b.setAttribute('aria-label', `Step ${i + 1}: ${p.title}`);
       b.addEventListener('click', () => show(i));
       nav.appendChild(b);
     });
   }
 
-  function show(i) {
+  function syncNav() {
+    $$('.nav-item').forEach((b, k) => {
+      const done = S.done.has(PAGES[k].id);
+      b.classList.toggle('active', k === S.page);
+      b.classList.toggle('done', done);
+      if (k === S.page) b.setAttribute('aria-current', 'step');
+      else b.removeAttribute('aria-current');
+      b.setAttribute('aria-label', `Step ${k + 1}: ${PAGES[k].title}${done ? ', complete' : ''}`);
+    });
+    const act = $('.nav-item.active');
+    // On a phone the steps are a horizontal strip; keep the current one in view.
+    if (act && act.scrollIntoView && $('#nav').scrollWidth > $('#nav').clientWidth) {
+      act.scrollIntoView({ block: 'nearest', inline: 'center', behavior: 'auto' });
+    }
+  }
+
+  function show(i, opts = {}) {
     S.page = Math.max(0, Math.min(PAGES.length - 1, i));
     const p = PAGES[S.page];
     $$('#pages .page').forEach(s => { s.hidden = s.dataset.page !== p.id; });
-    $$('.nav-item').forEach((b, k) => {
-      b.classList.toggle('active', k === S.page);
-      b.classList.toggle('done', S.done.has(PAGES[k].id));
-    });
+    syncNav();
     $('#page-title').textContent = p.title;
     $('#page-sub').textContent = p.sub;
+    document.title = `${p.title} — HES`;
+    if (!S.detail) emptyStates();
+    if (p.id === 'report') reportSummary();
     $('#btn-prev').disabled = S.page === 0;
     $('#btn-next').disabled = S.page === PAGES.length - 1;
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+    window.scrollTo({ top: 0, behavior: reducedMotion() ? 'auto' : 'smooth' });
+    // Move focus to the new page's heading so keyboard and screen-reader
+    // users land at the top of what just appeared (WCAG 2.4.3), not on a
+    // button whose page has gone.
+    if (!opts.initial && !opts.keepFocus) $('#page-title').focus({ preventScroll: true });
   }
 
   function wireChrome() {
@@ -152,13 +474,13 @@ const App = (() => {
 
     $('#res-mode').addEventListener('click', e => {
       const b = e.target.closest('.seg-btn'); if (!b) return;
-      $$('#res-mode .seg-btn').forEach(x => x.classList.toggle('active', x === b));
+      segSelect($('#res-mode'), b);
       $('#res-online').hidden = b.dataset.mode !== 'online';
       $('#res-offline').hidden = b.dataset.mode !== 'offline';
     });
     $('#load-mode').addEventListener('click', e => {
       const b = e.target.closest('.seg-btn'); if (!b) return;
-      $$('#load-mode .seg-btn').forEach(x => x.classList.toggle('active', x === b));
+      segSelect($('#load-mode'), b);
       ['file', 'paste', 'synthetic'].forEach(m => {
         $('#load-' + m).hidden = b.dataset.mode !== m;
       });
@@ -171,7 +493,7 @@ const App = (() => {
       scaleHost.addEventListener('click', e => {
         const b = e.target.closest('.seg-btn');
         if (!b) return;
-        $$('#site-scale .seg-btn').forEach(x => x.classList.toggle('active', x === b));
+        segSelect($('#site-scale'), b);
         applySiteScale(b.dataset.scale);
       });
     }
@@ -181,7 +503,11 @@ const App = (() => {
     const rd = $('#btn-redesign');
     if (rd) rd.addEventListener('click', () => {
       if (S.selected == null) { status('#design-status', 'Run a study and select a design first.', 'warn'); return; }
-      selectDesign(S.selected).then(() => status('#design-status', 'Design recalculated.', 'ok'));
+      if (blockOnInvalid('#design-status', ['design'])) return;
+      busy(rd, true, 'Recalculating…');
+      selectDesign(S.selected)
+        .then(ok => status('#design-status', ok ? 'Design recalculated.' : 'The design could not be recalculated — see the message on the Optimise page.', ok ? 'ok' : 'err'))
+        .finally(() => busy(rd, false));
     });
     $('#btn-report').addEventListener('click', makeReport);
     $('#btn-svg').addEventListener('click', downloadDiagrams);
@@ -189,31 +515,132 @@ const App = (() => {
     $('#btn-json').addEventListener('click', saveProject);
     const opener = $('#project-open');
     if (opener) opener.addEventListener('change', importProject);
+    // A <label> for a hidden file input looked like a button but could not
+    // be reached from the keyboard. A real button opens the same picker.
+    const ob = $('#btn-open');
+    if (ob && opener) ob.addEventListener('click', () => opener.click());
 
-    const saved = localStorage.getItem('ensys-theme');
+    const fv = $('#front-view');
+    if (fv) fv.addEventListener('click', e => {
+      const b = e.target.closest('.seg-btn'); if (!b) return;
+      segSelect(fv, b);
+      setFrontView(b.dataset.view);
+    });
+
+    let saved = null;
+    try { saved = localStorage.getItem('ensys-theme'); } catch (e) { /* storage blocked */ }
     if (saved) document.documentElement.setAttribute('data-theme', saved);
+    syncThemeButton();
+    if (window.matchMedia) {
+      const mq = matchMedia('(prefers-color-scheme: dark)');
+      if (mq.addEventListener) mq.addEventListener('change', syncThemeButton);
+    }
+  }
+
+  const isDark = () => {
+    const t = document.documentElement.getAttribute('data-theme');
+    if (t) return t === 'dark';
+    return !!(window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches);
+  };
+
+  function syncThemeButton() {
+    const b = $('#theme-toggle'); if (!b) return;
+    const dark = isDark();
+    b.textContent = dark ? 'Light theme' : 'Dark theme';
+    b.setAttribute('aria-pressed', 'false');
+    b.setAttribute('aria-label', dark ? 'Switch to light theme' : 'Switch to dark theme');
   }
 
   function toggleTheme() {
-    const cur = document.documentElement.getAttribute('data-theme');
-    const next = cur === 'dark' ? 'light' : 'dark';
+    // Start from what is actually on screen: with no saved choice the
+    // system theme is showing, and the first press must flip that.
+    const next = isDark() ? 'light' : 'dark';
     document.documentElement.setAttribute('data-theme', next);
     try { localStorage.setItem('ensys-theme', next); } catch (e) { /* private mode */ }
+    syncThemeButton();
+    if (window.Front3D && Front3D.retheme) Front3D.retheme();
+  }
+
+  /* Help icons. They used to appear on mouse hover only, so a keyboard or
+     touch user could never read them (WCAG 1.4.13, 2.1.1). Now each one is
+     focusable, opens on hover, focus or tap, closes with Escape, and its
+     text is also attached to the field itself through aria-describedby so a
+     screen reader hears it on reaching the input. */
+  let tipOwner = null;
+
+  function placeTip(q) {
+    const tip = $('#tip');
+    tip.textContent = q.dataset.help;
+    tip.hidden = false;
+    const r = q.getBoundingClientRect();
+    const w = Math.min(320, window.innerWidth - 16);
+    tip.style.maxWidth = w + 'px';
+    tip.style.left = Math.max(8, Math.min(window.innerWidth - w - 8, r.left - 8)) + 'px';
+    const below = r.bottom + 8 + tip.offsetHeight < window.innerHeight;
+    tip.dataset.place = below ? 'below' : 'above';
+    tip.style.top = (below ? r.bottom + 8 : r.top - 8) + 'px';
+    q.setAttribute('aria-expanded', 'true');
+    tipOwner = q;
+  }
+
+  function hideTip() {
+    $('#tip').hidden = true;
+    if (tipOwner) tipOwner.setAttribute('aria-expanded', 'false');
+    tipOwner = null;
+  }
+
+  let helpSeq = 0;
+  function enhanceHelp(root) {
+    (root || document).querySelectorAll('.q:not([data-ready])').forEach(q => {
+      q.dataset.ready = '1';
+      q.tabIndex = 0;
+      q.setAttribute('role', 'button');
+      q.setAttribute('aria-expanded', 'false');
+      const field = q.closest('.field, label');
+      const span = field && field.querySelector('span');
+      const name = span ? span.textContent.replace('?', '').trim() : '';
+      q.setAttribute('aria-label', name ? `About ${name}` : 'More information');
+      q.textContent = '?';
+      q.setAttribute('aria-hidden', 'false');
+      const ctl = field && field.querySelector('input, select, textarea');
+      if (ctl && q.dataset.help) {
+        const d = document.createElement('span');
+        d.className = 'sr-only'; d.id = 'help-' + (++helpSeq);
+        d.textContent = q.dataset.help;
+        field.appendChild(d);
+        const prev = ctl.getAttribute('aria-describedby');
+        ctl.setAttribute('aria-describedby', (prev ? prev + ' ' : '') + d.id);
+      }
+    });
   }
 
   function wireTips() {
-    const tip = $('#tip');
     document.addEventListener('mouseover', e => {
-      const q = e.target.closest('.q'); if (!q) return;
-      tip.textContent = q.dataset.help;
-      tip.hidden = false;
-      const r = q.getBoundingClientRect();
-      tip.style.left = Math.min(window.innerWidth - 310, r.left) + 'px';
-      tip.style.top = (r.bottom + 8) + 'px';
+      const q = e.target.closest('.q'); if (q) placeTip(q);
     });
     document.addEventListener('mouseout', e => {
-      if (e.target.closest('.q')) tip.hidden = true;
+      if (e.target.closest('.q') && document.activeElement !== e.target.closest('.q')) hideTip();
     });
+    document.addEventListener('focusin', e => {
+      const q = e.target.closest && e.target.closest('.q');
+      if (q) placeTip(q); else if (tipOwner) hideTip();
+    });
+    document.addEventListener('click', e => {
+      const q = e.target.closest('.q');
+      if (q) {
+        // Inside a <label> a click would move focus to the input instead.
+        e.preventDefault();
+        if (tipOwner === q) hideTip(); else { q.focus(); placeTip(q); }
+      } else if (tipOwner) hideTip();
+    });
+    document.addEventListener('keydown', e => {
+      if (e.key === 'Escape' && tipOwner) { const q = tipOwner; hideTip(); q.focus(); }
+      const q = e.target.closest && e.target.closest('.q');
+      if (q && (e.key === 'Enter' || e.key === ' ')) {
+        e.preventDefault(); tipOwner === q ? hideTip() : placeTip(q);
+      }
+    });
+    window.addEventListener('scroll', () => { if (tipOwner) placeTip(tipOwner); }, { passive: true });
   }
 
   /* --------------------------------------------------------------- site */
@@ -286,8 +713,9 @@ const App = (() => {
 
   async function fetchResources() {
     const mode = $('#res-mode .active').dataset.mode;
+    if (blockOnInvalid('#res-status', ['site'])) return;
     status('#res-status', 'Retrieving…');
-    $('#btn-fetch').disabled = true;
+    busy('#btn-fetch', true, 'Retrieving…');
 
     const payload = { session: S.session, location: location(), mode };
     if (mode === 'online') {
@@ -299,13 +727,18 @@ const App = (() => {
       payload.mean_wind_speed = +$('#mean-wind').value;
       if (payload.monthly_ghi.length !== 12) {
         status('#res-status', `Twelve monthly GHI values are needed; ${payload.monthly_ghi.length} were given.`, 'err');
-        $('#btn-fetch').disabled = false; return;
+        busy('#btn-fetch', false);
+        $('#monthly-ghi').setAttribute('aria-invalid', 'true');
+        $('#monthly-ghi').focus();
+        return;
       }
     }
 
-    const r = await call('fetch_resources', payload);
+    $('#monthly-ghi').removeAttribute('aria-invalid');
+    let r;
+    try { r = await call('fetch_resources', payload); }
+    finally { busy('#btn-fetch', false); }
     if (r.ok) renderFindings('#res-findings', r.findings);
-    $('#btn-fetch').disabled = false;
     if (!r.ok) { status('#res-status', r.error, 'err'); return; }
 
     S.resourceLoaded = true;
@@ -316,13 +749,13 @@ const App = (() => {
     $('#res-charts').hidden = false;
     if (r.monthly_ghi) {
       Chart.bars($('#chart-ghi'), {
-        title: 'Monthly irradiation (kWh/m²)',
+        title: 'Monthly irradiation (kWh/m²)', unit: 'kWh/m²',
         series: [{ name: 'GHI', values: r.monthly_ghi }],
       });
     }
     if (r.monthly_temperature) {
       Chart.lines($('#chart-temp'), {
-        title: 'Monthly mean temperature (°C)', labels: Chart.MONTHS,
+        title: 'Monthly mean temperature (°C)', labels: Chart.MONTHS, unit: '°C',
         series: [{ name: 'Air temperature', values: r.monthly_temperature }], fill: true,
       });
     }
@@ -363,16 +796,17 @@ const App = (() => {
 
   async function loadProfile() {
     const mode = $('#load-mode .active').dataset.mode;
+    if (blockOnInvalid('#load-status', ['load'])) return;
     const payload = { session: S.session, name: 'load', scale: +$('#load-scale').value };
 
     if (mode === 'file') {
       const text = await readFile($('#load-upload'));
-      if (!text) { status('#load-status', 'Choose a file first.', 'err'); return; }
+      if (!text) { status('#load-status', 'Choose a file first.', 'err'); $('#load-upload').focus(); return; }
       payload.csv = text;
       payload.column = $('#load-column').value || null;
     } else if (mode === 'paste') {
       const t = $('#load-text').value.trim();
-      if (!t) { status('#load-status', 'Paste some data first.', 'err'); return; }
+      if (!t) { status('#load-status', 'Paste some data first.', 'err'); $('#load-text').focus(); return; }
       if (/[a-zA-Z]/.test(t.split('\n')[0])) payload.csv = t;
       else payload.values = nums(t);
     } else {
@@ -381,7 +815,10 @@ const App = (() => {
     }
 
     status('#load-status', 'Processing…');
-    const r = await call('import_series', payload);
+    let r;
+    busy('#btn-load', true, 'Processing…');
+    try { r = await call('import_series', payload); }
+    finally { busy('#btn-load', false); }
     if (!r.ok) { status('#load-status', r.error, 'err'); return; }
 
     S.loadLoaded = true; S.done.add('load');
@@ -403,12 +840,13 @@ const App = (() => {
     ].join('');
 
     Chart.bars($('#chart-load-month'), {
-      title: 'Monthly demand (kWh)',
+      title: 'Monthly demand (kWh)', unit: 'kWh',
       series: [{ name: 'Demand', values: r.monthly }],
     });
     Chart.lines($('#chart-load-day'), {
-      title: 'Average day (kW)',
+      title: 'Average day (kW)', unit: 'kW', xName: 'Hour',
       labels: Array.from({ length: 24 }, (_, i) => String(i)),
+      pointLabels: Array.from({ length: 24 }, (_, i) => String(i).padStart(2, '0') + ':00'),
       series: [{ name: 'Demand', values: r.daily_profile }], fill: true,
     });
   }
@@ -444,11 +882,15 @@ const App = (() => {
 
   async function loadWind() {
     const text = await readFile($('#wind-upload'));
-    if (!text) { status('#wind-status', 'Choose a file first.', 'err'); return; }
-    const r = await call('import_series', {
-      session: S.session, name: 'wind_speed', csv: text,
-      column: $('#wind-column').value || null,
-    });
+    if (!text) { status('#wind-status', 'Choose a file first.', 'err'); $('#wind-upload').focus(); return; }
+    let r;
+    busy('#btn-wind', true, 'Reading…');
+    try {
+      r = await call('import_series', {
+        session: S.session, name: 'wind_speed', csv: text,
+        column: $('#wind-column').value || null,
+      });
+    } finally { busy('#btn-wind', false); }
     if (!r.ok) { status('#wind-status', r.error, 'err'); return; }
     status('#wind-status',
       `${r.hours} hours, mean ${r.stats.mean.toFixed(2)} m/s, max ${r.stats.max.toFixed(1)} m/s. ${r.notes.join(' ')}`, 'ok');
@@ -525,7 +967,7 @@ const App = (() => {
 
   function setField(comp, field, value) {
     const el = $(`[data-c="${comp}"][data-f="${field}"]`);
-    if (el) el.value = value;
+    if (el) { el.value = value; checkField(el); }
   }
 
   function applySiteScale(key) {
@@ -597,7 +1039,7 @@ const App = (() => {
           const el = $(`[data-c="${comp}"][data-f="${f}"]`);
           if (!el) return;
           const v = parseFloat(el.value);
-          if (v > 0) el.value = round2(v * k);
+          if (v > 0) { el.value = round2(v * k); checkField(el); }
         });
         status('#scale-status',
           `The ${comp} unit changed from ${before} to ${after}, so its `
@@ -649,7 +1091,10 @@ const App = (() => {
            + `<option value="0"${dflt ? '' : ' selected'}>No</option></select>`;
     }
     if (typeof dflt === 'number') {
-      return `<input type="number" step="any" ${attrs} value="${dflt}">`;
+      // Fractions carry their bounds, so 14 typed for 14 % is caught at the
+      // field rather than sized into the result.
+      const fr = f.unit === 'fraction' ? ' min="0" max="1" data-frac' : '';
+      return `<input type="number" step="any"${fr} ${attrs} value="${dflt}">`;
     }
     return `<input type="text" ${attrs} value="${escapeHtml(String(dflt))}">`;
   }
@@ -675,22 +1120,43 @@ const App = (() => {
            + `${fieldInput(tech, f)}</label>`;
     }).join('');
 
+    return compCard(tech, entry.label, on, rows);
+  }
+
+  /* One card shape for every technology. An excluded technology collapses
+     to its name and a single line: the page is about what WILL be sized,
+     and fifteen pages of greyed-out fields hid the five that matter. Its
+     values are kept, so ticking Include brings them straight back. */
+  function compCard(tech, label, on, rows) {
     const card = document.createElement('div');
-    card.className = 'card';
+    card.className = 'card comp-card';
     card.innerHTML = `
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-        <h2 style="margin:0">${escapeHtml(entry.label)}</h2>
-        <label style="display:flex;gap:7px;align-items:center;font-size:12.5px;font-weight:600">
-          <input type="checkbox" data-enable="${tech}" ${on ? 'checked' : ''}> Include
+      <div class="comp-head">
+        <h2 id="comp-h-${tech}">${escapeHtml(label)}</h2>
+        <label class="comp-toggle">
+          <input type="checkbox" data-enable="${tech}" ${on ? 'checked' : ''}
+            aria-controls="comp-b-${tech}"> Include
+          <span class="comp-off-note">not sized</span>
         </label>
       </div>
-      <div class="row-3" data-body="${tech}">${rows}</div>`;
+      <fieldset class="row-3" id="comp-b-${tech}" data-body="${tech}" aria-labelledby="comp-h-${tech}">${rows}</fieldset>`;
 
     const cb = card.querySelector(`[data-enable="${tech}"]`);
+    cb.setAttribute('aria-label', `Include ${label}`);
     const body = card.querySelector(`[data-body="${tech}"]`);
-    const sync = () => { body.style.opacity = cb.checked ? '1' : '.4';
-                         body.style.pointerEvents = cb.checked ? '' : 'none'; };
+    const note = card.querySelector('.comp-off-note');
+    // A disabled fieldset takes its fields out of the tab order and tells a
+    // screen reader they are unavailable; hiding it as well gives the space
+    // back to the technologies that are in the study.
+    const sync = () => {
+      body.disabled = !cb.checked;
+      body.hidden = !cb.checked;
+      note.hidden = cb.checked;
+      card.classList.toggle('comp-off', !cb.checked);
+      cb.setAttribute('aria-expanded', String(cb.checked));
+    };
     cb.addEventListener('change', sync); sync();
+    card._sync = sync;
     return card;
   }
 
@@ -704,7 +1170,7 @@ const App = (() => {
     ['demand_charge', 'Demand charge per kW-month', 0, 'Charged on the monthly peak. Often the largest line on a commercial bill.'],
     ['standing_charge', 'Standing charge per year', 0],
     ['emission_factor', 'Grid CO2 (kg/kWh)', 0.4],
-    ['availability', 'Availability', 1.0, 'Fraction of hours the supply is present. Below 1.0 models an unreliable network.'],
+    ['availability', 'Availability (0-1)', 1.0, 'Fraction of hours the supply is present. Below 1.0 models an unreliable network.'],
     ['mean_outage_hours', 'Mean outage length (h)', 4, 'How long one interruption lasts on average. With the availability this fixes how OFTEN the supply fails, and that is what sizes the backup: 5% lost as 440 one-hour blips needs almost no storage, the same 5% as 35 outages of twelve hours needs a great deal.'],
   ];
 
@@ -712,24 +1178,9 @@ const App = (() => {
     const rows = GRID_FIELDS.map(([k, label, dflt, help]) =>
       `<label class="field"><span>${label}`
       + (help ? ` <i class="q" data-help="${help.replace(/"/g, '&quot;')}">?</i>` : '')
-      + `</span><input type="number" step="any" data-c="grid" data-f="${k}" value="${dflt}"></label>`
+      + `</span><input type="number" step="any"${k === 'availability' ? ' min="0" max="1" data-frac' : (/limit|charge|hours/.test(k) ? ' min="0"' : '')} data-c="grid" data-f="${k}" value="${dflt}"></label>`
     ).join('');
-    const card = document.createElement('div');
-    card.className = 'card';
-    card.innerHTML = `
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-        <h2 style="margin:0">Grid connection</h2>
-        <label style="display:flex;gap:7px;align-items:center;font-size:12.5px;font-weight:600">
-          <input type="checkbox" data-enable="grid" checked> Include
-        </label>
-      </div>
-      <div class="row-3" data-body="grid">${rows}</div>`;
-    const cb = card.querySelector('[data-enable="grid"]');
-    const body = card.querySelector('[data-body="grid"]');
-    const sync = () => { body.style.opacity = cb.checked ? '1' : '.4';
-                         body.style.pointerEvents = cb.checked ? '' : 'none'; };
-    cb.addEventListener('change', sync); sync();
-    return card;
+    return compCard('grid', 'Grid connection', true, rows);
   }
 
   let ALL_TECHS = [];
@@ -766,6 +1217,7 @@ const App = (() => {
 
     buildCostBasis(schema);
     linkUnitCosts();
+    enhanceHelp(host); enhanceHelp(extra);
   }
 
   function buildCostBasis(schema) {
@@ -793,6 +1245,7 @@ const App = (() => {
       btn.addEventListener('click', () => {
         const ex = $('#components-extra');
         ex.hidden = !ex.hidden;
+        btn.setAttribute('aria-expanded', String(!ex.hidden));
         btn.textContent = ex.hidden
           ? 'Show all technologies' : 'Hide the other technologies';
       });
@@ -843,20 +1296,36 @@ const App = (() => {
       status('#run-status', 'Choose at least two objectives — a Pareto front needs a trade-off.', 'err'); return;
     }
 
+    if (blockOnInvalid('#run-status', ['components', 'economics', 'optimise'])) return;
+
     const constraints = {};
     const lpsp = +$('#max-lpsp').value;
     if (lpsp > 0) constraints.lpsp = ['<=', lpsp];
     const rf = +$('#min-rf').value;
     if (rf > 0) constraints.renewable_fraction = ['>=', rf];
 
-    $('#btn-run').disabled = true;
+    busy('#btn-run', true, 'Running…');
     $('#run-progress').hidden = false;
-    $('#run-bar').style.width = '8%';
+    $('#run-progress').classList.remove('done');
+    $('#run-bar').style.width = '0';
+    // The engine reports nothing until it has finished, so the one honest
+    // progress signal is time: it shows the run is alive, not frozen.
+    const tStart = performance.now();
+    const tick = () => { $('#run-elapsed').textContent = ((performance.now() - tStart) / 1000).toFixed(0) + ' s elapsed'; };
+    tick();
+    const timer = setInterval(tick, 1000);
+    // The engine reports nothing until it finishes, so the bar says
+    // "working" rather than pretending to a percentage it does not know.
+    $('#run-bar-track').classList.add('indeterminate');
+    $('#run-bar-track').removeAttribute('aria-valuenow');
+    $('#run-bar-track').setAttribute('aria-valuetext', 'Running');
     $('#run-msg').textContent = 'Screening the search space…';
     status('#run-status', '');
 
     const t0 = performance.now();
-    const r = await call('run_study', {
+    let r;
+    try {
+    r = await call('run_study', {
       session: S.session, config: componentConfig(), objectives,
       costs: costBasis(),
       constraints, strategy: $('#strategy').value,
@@ -874,8 +1343,15 @@ const App = (() => {
         decommissioning_fraction: +(($('#decommissioning') || { value: 0 }).value),
       },
     });
-
-    $('#btn-run').disabled = false;
+    } finally {
+      clearInterval(timer);
+      $('#run-elapsed').textContent = '';
+      busy('#btn-run', false);
+    }
+    $('#run-progress').classList.add('done');
+    $('#run-bar-track').classList.remove('indeterminate');
+    $('#run-bar-track').setAttribute('aria-valuenow', '100');
+    $('#run-bar-track').setAttribute('aria-valuetext', 'Finished');
     $('#run-bar').style.width = '100%';
     if (!r.ok) { $('#run-progress').hidden = true; status('#run-status', r.error, 'err'); return; }
 
@@ -889,6 +1365,7 @@ const App = (() => {
             + 'is exact.'
           : '.');
     S.front = r.front;
+    S.dirty = true;
     S.done.add('optimise');
 
     if (r.summary.warnings && r.summary.warnings.length) {
@@ -898,60 +1375,124 @@ const App = (() => {
     }
 
     renderFindings('#run-findings', r.findings);
+    $('#front-card').hidden = false;      // first: the chart sizes to its card
     renderFront(r);
-    $('#front-card').hidden = false;
+  }
+
+  const OBJ_LABEL = {
+    npc: 'Net present cost', lcoe: 'LCOE', lpsp: 'LPSP',
+    renewable_fraction: 'Renewable fraction', emissions_kg: 'Emissions (kg/yr)',
+    initial_capital: 'Initial capital',
+  };
+  const isPct = k => k === 'renewable_fraction' || k === 'lpsp';
+
+  function frontAxes(objs) {
+    const xk = objs.includes('npc') ? 'npc' : objs[0];
+    const yk = objs.includes('renewable_fraction') ? 'renewable_fraction'
+             : objs.includes('lpsp') ? 'lpsp' : objs.find(o => o !== xk);
+    const zk = objs.find(o => o !== xk && o !== yk) || null;
+    return { xk, yk, zk };
+  }
+
+  function drawFrontChart() {
+    const r = S.frontR; if (!r) return;
+    const { xk, yk } = frontAxes(r.summary.objectives);
+    const cur = curCode();
+    Chart.scatter($('#chart-front'), {
+      title: 'Cost against performance — each point is a buildable design',
+      xTitle: (OBJ_LABEL[xk] || xk) + (xk === 'npc' ? ` (${cur})` : ''),
+      yTitle: (OBJ_LABEL[yk] || yk) + (isPct(yk) ? ' (%)' : ''),
+      points: r.front.map((f, i) => ({
+        x: f[xk], y: isPct(yk) ? f[yk] * 100 : f[yk],
+        index: i, selected: i === S.selected,
+        recommended: i === r.recommended_index,
+        label: `Design ${i + 1}: ${describe(f)}. NPC ${cash(f.npc)}, LCOE ${perKwh(f.lcoe)}, `
+             + `${(f.renewable_fraction * 100).toFixed(1)}% renewable, LPSP ${(f.lpsp * 100).toFixed(2)}%`,
+      })),
+      onPick: p => selectDesign(p.index),
+      summary: `${r.front.length} Pareto-optimal designs. ${OBJ_LABEL[xk] || xk} runs from `
+        + `${cash(Math.min(...r.front.map(f => f[xk])))} to ${cash(Math.max(...r.front.map(f => f[xk])))}.`,
+    });
+  }
+
+  function setFrontView(view) {
+    S.frontView = view;
+    const is3d = view === '3d';
+    $('#chart-front').hidden = is3d;
+    $('#front-3d-wrap').hidden = !is3d;
+    if (is3d) showFront3D();
+  }
+
+  async function showFront3D() {
+    const r = S.frontR; if (!r) return;
+    const host = $('#front-3d');
+    const { xk, yk, zk } = frontAxes(r.summary.objectives);
+    // A third objective is what a third axis is for; without one, the
+    // initial capital is the most useful extra dimension to show.
+    const z = zk || 'initial_capital';
+    try {
+      if (!window.Front3D) {
+        host.innerHTML = '<div class="three-msg">Loading the 3-D viewer…</div>';
+        await import('./front3d.js');
+      }
+      await window.Front3D.render(host, {
+        points: r.front.map((f, i) => ({
+          index: i,
+          x: f[xk], y: isPct(yk) ? f[yk] * 100 : f[yk], z: isPct(z) ? f[z] * 100 : f[z],
+          c: f.npc, label: `Design ${i + 1}: ${describe(f)} · NPC ${cash(f.npc)}`,
+        })),
+        axes: [OBJ_LABEL[xk] || xk, (OBJ_LABEL[yk] || yk) + (isPct(yk) ? ' %' : ''),
+               (OBJ_LABEL[z] || z) + (isPct(z) ? ' %' : '')],
+        selected: S.selected,
+        onPick: i => selectDesign(i),
+      });
+    } catch (err) {
+      host.innerHTML = '<div class="three-msg">The 3-D view needs WebGL and a page served over http '
+        + '(python server.py). The 2-D chart and the table show the same designs.<br><small>'
+        + escapeHtml((err && err.message) || String(err)) + '</small></div>';
+    }
   }
 
   function renderFront(r) {
+    S.frontR = r;
+    S.selected = r.recommended_index != null ? r.recommended_index : null;
     const objs = r.summary.objectives;
-    const xk = objs.includes('npc') ? 'npc' : objs[0];
-    const yk = objs.includes('renewable_fraction') ? 'renewable_fraction'
-             : objs.includes('lpsp') ? 'lpsp' : objs[1];
-    const yLabel = { renewable_fraction: 'Renewable fraction', lpsp: 'LPSP',
-                     lcoe: 'LCOE', emissions_kg: 'Emissions (kg/yr)' }[yk] || yk;
-
-    Chart.scatter($('#chart-front'), {
-      title: 'Cost against performance — each point is a buildable design',
-      xTitle: xk === 'npc' ? 'Net present cost' : xk,
-      yTitle: yLabel,
-      points: r.front.map((f, i) => ({
-        x: f[xk], y: yk === 'renewable_fraction' ? f[yk] * 100 : f[yk],
-        index: i, selected: i === r.recommended_index,
-        label: `${eng(f.pv_kwp, 'kWp')} PV · ${eng(f.battery_kwh, 'kWh')} · `
-             + `NPC ${cash(f.npc)} · LCOE ${perKwh(f.lcoe)}`,
-      })),
-      onPick: p => selectDesign(p.index),
-    });
+    const fvBtn3 = $('#front-view [data-view="3d"]');
+    if (fvBtn3) fvBtn3.textContent = objs.length >= 3 ? '3-D (three objectives)' : '3-D (with capital cost)';
+    drawFrontChart();
 
     const H = r.highlights;
     const notes = r.highlight_notes || {};
+    // Real buttons: they were clickable <div>s that no keyboard could reach.
     $('#highlights').innerHTML = [
       ['Recommended', H.recommended, 'recommended'],
       ['Lowest cost', H.cheapest, 'cheapest'],
       ['Most renewable', H.greenest, 'greenest'],
       ['Most reliable', H.most_reliable, 'most_reliable'],
     ].filter(([, d]) => d).map(([tag, d, key]) => `
-      <div class="hl" data-x='${JSON.stringify(d.x)}'>
-        <div class="hl-tag">${tag}</div>
-        <div class="hl-main">${describe(d)}</div>
-        <div class="hl-sub">${cash(d.npc)} NPC · ${perKwh(d.lcoe)} · `
-          + `${(d.renewable_fraction * 100).toFixed(0)}% renewable</div>`
+      <button type="button" class="hl" aria-pressed="false" data-x='${JSON.stringify(d.x)}'>
+        <span class="hl-tag">${tag}</span>
+        <span class="hl-main">${describe(d)}</span>
+        <span class="hl-sub">${cash(d.npc)} NPC · ${perKwh(d.lcoe)} · `
+          + `${(d.renewable_fraction * 100).toFixed(0)}% renewable</span>`
           + (notes[key]
-              ? `<div class="hl-note">${escapeHtml(notes[key])}</div>` : '')
-          + `</div>`).join('');
+              ? `<span class="hl-note">${escapeHtml(notes[key])}</span>` : '')
+          + `</button>`).join('');
     $$('#highlights .hl').forEach(h => h.addEventListener('click', () => {
       const x = JSON.parse(h.dataset.x);
       selectDesign(S.front.findIndex(f => JSON.stringify(f.x) === JSON.stringify(x)));
     }));
 
-    const cur = $('#currency').value;
     const t = $('#front-table');
-    t.innerHTML = `<thead><tr>
-      <th>Design</th><th>PV</th><th>Wind</th><th>Battery</th>
-      <th>Genset</th><th>NPC</th><th>LCOE</th><th>LPSP</th>
-      <th>Renewable</th><th>Capital</th></tr></thead><tbody>` +
-      r.front.map((f, i) => `<tr class="clickable${i === r.recommended_index ? ' sel' : ''}" data-i="${i}">
-        <td>${i + 1}</td><td>${eng(f.pv_kwp, 'kWp')}</td><td>${eng(f.wind_kw, 'kW')}</td>
+    t.innerHTML = `<caption class="sr-only">Pareto-optimal designs. Press a design number to open it.</caption>
+      <thead><tr>
+      <th scope="col">Design</th><th scope="col">PV</th><th scope="col">Wind</th><th scope="col">Battery</th>
+      <th scope="col">Genset</th><th scope="col">NPC</th><th scope="col">LCOE</th><th scope="col">LPSP</th>
+      <th scope="col">Renewable</th><th scope="col">Capital</th></tr></thead><tbody>` +
+      r.front.map((f, i) => `<tr class="clickable" data-i="${i}">
+        <th scope="row"><button type="button" class="row-pick" data-i="${i}" aria-pressed="false"
+          aria-label="Open design ${i + 1}${i === r.recommended_index ? ' (recommended)' : ''}">${i + 1}${i === r.recommended_index ? ' ★' : ''}</button></th>
+        <td>${eng(f.pv_kwp, 'kWp')}</td><td>${eng(f.wind_kw, 'kW')}</td>
         <td>${eng(f.battery_kwh, 'kWh')}</td><td>${eng(f.genset_kw, 'kW')}</td>
         <td>${cash(f.npc)}</td><td>${perKwh(f.lcoe)}</td>
         <td>${(f.lpsp * 100).toFixed(2)}%</td>
@@ -960,7 +1501,20 @@ const App = (() => {
     t.querySelectorAll('tr[data-i]').forEach(tr =>
       tr.addEventListener('click', () => selectDesign(+tr.dataset.i)));
 
-    if (r.recommended_index != null) selectDesign(r.recommended_index);
+    if (S.frontView === '3d') showFront3D();
+    if (r.recommended_index != null) selectDesign(r.recommended_index, { quiet: true });
+  }
+
+  /* Selection is shown in four places — chart, 3-D view, highlight cards,
+     table — and all four follow it. */
+  function syncSelection() {
+    const i = S.selected;
+    $$('#front-table tr[data-i]').forEach(tr => tr.classList.toggle('sel', +tr.dataset.i === i));
+    $$('#front-table .row-pick').forEach(b => b.setAttribute('aria-pressed', String(+b.dataset.i === i)));
+    const xs = i != null && S.front[i] ? JSON.stringify(S.front[i].x) : null;
+    $$('#highlights .hl').forEach(h => h.setAttribute('aria-pressed', String(h.dataset.x === xs)));
+    Chart.select && Chart.select($('#chart-front'), i);
+    if (window.Front3D && S.frontView === '3d') Front3D.select(i);
   }
 
   const describe = d => [
@@ -1029,20 +1583,31 @@ const App = (() => {
     Object.entries(d.cable_lengths || {}).forEach(([k, v]) => put(`[data-len="${k}"]`, v));
   }
 
-  async function selectDesign(i) {
-    if (i < 0 || i >= S.front.length) return;
+  async function selectDesign(i, opts = {}) {
+    if (i < 0 || i >= S.front.length) return false;
     S.selected = i;
-    $$('#front-table tr[data-i]').forEach(tr =>
-      tr.classList.toggle('sel', +tr.dataset.i === i));
+    syncSelection();
+    if (!opts.quiet) announce(`Design ${i + 1} selected: ${describe(S.front[i])}. Results, design and diagrams updated.`);
 
     const d = await call('detail', { session: S.session, x: S.front[i].x,
                                      design: designInputs() });
-    if (!d.ok) { status('#run-status', d.error, 'err'); return; }
+    if (!d.ok) { status('#run-status', d.error, 'err'); return false; }
     S.detail = d;
     S.done.add('results'); S.done.add('design'); S.done.add('diagrams');
     renderResults(d); renderDesign(d); renderDiagrams(d);
-    $$('.nav-item').forEach((b, k) => b.classList.toggle('done', S.done.has(PAGES[k].id)));
+    const bar = designBar();
+    ['#results-body', '#design-body', '#diagram-body'].forEach(h => $(h).insertAdjacentHTML('afterbegin', bar));
+    syncNav();
+    reportSummary();
+    return true;
   }
+
+  /* Engine keys ("pv", "ev_fleet") as labels a reader expects. */
+  const ACRONYM = { pv: 'PV', ev: 'EV', om: 'O&M', bess: 'BESS', chp: 'CHP' };
+  const niceName = k => {
+    const t = String(k).split('_').map(w => ACRONYM[w] || w).join(' ');
+    return t.charAt(0).toUpperCase() + t.slice(1);
+  };
 
   /* ------------------------------------------------------------ results */
   function renderResults(d) {
@@ -1050,8 +1615,8 @@ const App = (() => {
     const host = $('#results-body');
     host.innerHTML = `
       <div class="card">
-        <h2>${describe(S.front[S.selected])}</h2>
-        <div class="kpis">
+        <h2>Key figures</h2>
+        <div class="kpis kpis-4">
           ${kpi(Chart.money(ec.npc, cur), 'Net present cost', `over ${$('#proj-years').value} years`)}
           ${kpi(Chart.money(ec.lcoe, cur, { unit: 'kWh' }), 'Levelised cost', 'of energy served')}
           ${kpi(Chart.money(ec.initial_capital, cur), 'Initial capital')}
@@ -1087,14 +1652,15 @@ const App = (() => {
 
     Chart.waterfall($('#chart-cost'), {
       title: `Net present cost by component (${cur})`,
+      format: v => Chart.money(v, cur),
       items: Object.entries(ec.items)
-        .map(([k, v]) => ({ name: k.replace(/_/g, ' '), value: v.npc }))
+        .map(([k, v]) => ({ name: niceName(k), value: v.npc }))
         .filter(i => i.value > 0).sort((a, b) => b.value - a.value),
     });
 
     const g = d.charts.monthly_generation;
     Chart.bars($('#chart-monthly'), {
-      title: 'Monthly energy (kWh)',
+      title: 'Monthly energy (kWh)', unit: 'kWh',
       series: [
         { name: 'PV', values: g.pv }, { name: 'Wind', values: g.wind },
         { name: 'Generator', values: g.genset }, { name: 'Grid import', values: g.import },
@@ -1103,8 +1669,9 @@ const App = (() => {
 
     const dp = d.charts.daily_profile;
     Chart.lines($('#chart-daily'), {
-      title: 'Average day (kW)',
+      title: 'Average day (kW)', unit: 'kW', xName: 'Hour',
       labels: Array.from({ length: 24 }, (_, i) => String(i)),
+      pointLabels: Array.from({ length: 24 }, (_, i) => String(i).padStart(2, '0') + ':00'),
       series: [
         { name: 'Demand', values: dp.load }, { name: 'PV', values: dp.pv },
         { name: 'Wind', values: dp.wind }, { name: 'Battery out', values: dp.battery_discharge },
@@ -1114,7 +1681,9 @@ const App = (() => {
 
     const w = d.sample_week;
     Chart.area($('#chart-week'), {
-      labels: w.hours.map((h, i) => i % 24 === 0 ? 'd' + Math.floor(h / 24) : ''),
+      title: 'Supply and demand over one week (kW)', unit: 'kW',
+      labels: w.hours.map((h, i) => i % 24 === 0 ? 'Day ' + Math.floor(h / 24) : ''),
+      pointLabels: w.hours.map(h => `Day ${Math.floor(h / 24)}, ${String(h % 24).padStart(2, '0')}:00`),
       series: [
         { name: 'PV', values: w.pv }, { name: 'Wind', values: w.wind },
         { name: 'Battery', values: w.battery_discharge },
@@ -1124,9 +1693,10 @@ const App = (() => {
     });
 
     Chart.lines($('#chart-soc'), {
-      title: 'Daily mean state of charge', height: 170,
+      title: 'Daily mean state of charge (%)', height: 170, xName: 'Day', unit: '%',
       labels: Array.from({ length: 365 }, (_, i) => i % 30 === 0 ? String(i) : ''),
-      series: [{ name: 'SOC', values: d.charts.soc_daily }], fill: true,
+      pointLabels: Array.from({ length: 365 }, (_, i) => String(i + 1)),
+      series: [{ name: 'SOC', values: d.charts.soc_daily.map(v => v * 100) }], fill: true,
     });
   }
 
@@ -1260,7 +1830,7 @@ const App = (() => {
         <td><span class="pill ${p.compliant && p.breaking_ok !== false ? 'ok' : 'bad'}">${p.compliant && p.breaking_ok !== false ? 'yes' : 'review'}</span></td>
         </tr>`).join('') + '</tbody></table></div></div>';
 
-    h += `<div class="card"><h2>Isolation and safety</h2><div class="table-wrap"><table><thead><tr>
+    h += `<div class="card"><h2>Isolation and safety</h2><div class="table-wrap"><table class="wrap"><thead><tr>
       <th>Device</th><th>Rating</th><th>Location</th><th>Standard</th></tr></thead><tbody>` +
       de.schedules.isolation.map(i => `<tr><td>${i.device}</td><td>${i.rating}</td>
         <td>${i.location}</td><td>${i.standard}</td></tr>`).join('')
@@ -1425,6 +1995,8 @@ const App = (() => {
       .toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
     download(`ensys_${slug || 'project'}.json`,
              JSON.stringify(projectSnapshot(), null, 2), 'application/json');
+    S.dirty = false;
+    reportSummary();
     status('#report-status',
       'Project saved. "Open project", at the top of any page, reads it back.',
       'ok');
@@ -1437,6 +2009,7 @@ const App = (() => {
     if (!el || v === undefined || v === null || v === '') return;
     el.value = v;
     if ('prev' in el.dataset) el.dataset.prev = String(v);
+    if (el.type === 'number') checkField(el);   // keeps "= x %" and errors true
   }
 
   function segment(hostSel, key, wanted) {
@@ -1469,7 +2042,7 @@ const App = (() => {
       const ex = $('#components-extra'), btn = $('#btn-more-tech');
       if (ex && ex.hidden) {
         ex.hidden = false;
-        if (btn) btn.textContent = 'Hide the other technologies';
+        if (btn) { btn.textContent = 'Hide the other technologies'; btn.setAttribute('aria-expanded', 'true'); }
       }
     }
   }
@@ -1687,7 +2260,8 @@ against the manufacturer's data before procurement.</li>
 review, a site survey, or compliance sign-off against the local wiring rules.</li></ul>
 </body></html>`;
 
-    download('ensys_report.html', html, 'text/html');
+    const rslug = (title || 'report').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 60);
+    download(`${rslug || 'hes_report'}.html`, html, 'text/html');
     status('#report-status', 'Report generated. Open it in a browser and print to PDF if you need one.', 'ok');
   }
 

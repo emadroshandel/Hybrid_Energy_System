@@ -431,7 +431,7 @@ def isolation_requirements(has_pv=False, has_battery=False, has_genset=False,
     if has_pv:
         items.append({
             "device": "PV array DC isolator",
-            "rating": f"DC rated to {array_voltage_v} V, load-break",
+            "rating": f"DC rated to {float(array_voltage_v):.0f} V, load-break",
             "location": "At the array and at the inverter",
             "standard": "IEC 60947-3 / IEC 62548",
             "note": (
