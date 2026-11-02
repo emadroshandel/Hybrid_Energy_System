@@ -72,6 +72,14 @@ class PVArray(NonDispatchable):
     system_losses : fractional DC-side losses aggregated (soiling, mismatch,
         wiring, light-induced degradation, connections)
     tracking : "fixed", "single_axis" or "two_axis"
+    inverter_efficiency : weighted (Euro / CEC) inverter efficiency applied
+        to reach the AC bus. `system_losses` is the PVWatts-style DC loss
+        budget (soiling, shading, mismatch, wiring, LID, nameplate,
+        availability - 14 % by default) and does NOT include the inverter,
+        so leaving this out overstated every PV kilowatt-hour reaching the
+        load by 3-4 %. IEC 61724-1 defines yield and PR at the AC output.
+    dc_ac_ratio : array kWp over inverter kW AC. The AC output is clipped at
+        the inverter rating this implies. None disables clipping.
     """
 
     def __init__(
@@ -88,6 +96,8 @@ class PVArray(NonDispatchable):
         tracking="fixed",
         module_efficiency=0.20,
         degradation_per_year=0.005,
+        inverter_efficiency=0.97,
+        dc_ac_ratio=1.20,
         capital_cost=0.0,
         replacement_cost=0.0,
         om_cost_per_year=0.0,
@@ -109,6 +119,10 @@ class PVArray(NonDispatchable):
         self.tracking = tracking
         self.module_efficiency = float(module_efficiency)
         self.degradation_per_year = float(degradation_per_year)
+        self.inverter_efficiency = float(inverter_efficiency or 1.0)
+        self.dc_ac_ratio = float(dc_ac_ratio) if dc_ac_ratio else None
+        if not (0.5 < self.inverter_efficiency <= 1.0):
+            raise ValueError("inverter_efficiency must be in (0.5, 1]")
 
         if not (-1.0 < self.temp_coeff_pmax < 0.0):
             raise ValueError(
@@ -180,7 +194,10 @@ class PVArray(NonDispatchable):
         year=2019,
     ):
         """
-        Hourly AC-side DC power (kW) before the inverter.
+        Hourly AC power (kW) delivered to the AC bus: DC array output after
+        the DC loss budget, through the inverter efficiency and clipped at
+        the inverter's AC rating. The DC series is kept in `info["dc_kw"]`
+        for the inverter and string design, which need the DC side.
 
         `ghi`, `dni`, `dhi` are hourly W/m2 series. If dni/dhi are missing,
         they are estimated from GHI with the Erbs correlation - workable, but
@@ -246,7 +263,18 @@ class PVArray(NonDispatchable):
                 p = 0.0
             dc.append(p)
 
-        total = sum(dc)
+        total_dc = sum(dc)
+        ac_limit = (self.capacity_kwp / self.dc_ac_ratio
+                    if self.dc_ac_ratio else None)
+        eta = self.inverter_efficiency
+        ac = []
+        for p in dc:
+            a = p * eta
+            if ac_limit is not None and a > ac_limit:
+                a = ac_limit
+                clipped_hours += 1
+            ac.append(a)
+        total = sum(ac)
         cf = total / (self.capacity_kwp * n) if self.capacity_kwp and n else 0.0
 
         info = {
@@ -261,7 +289,12 @@ class PVArray(NonDispatchable):
             "mean_cell_temp_c": (
                 sum(cell_temps) / len(cell_temps) if cell_temps else 0.0
             ),
-            "annual_dc_kwh": total,
+            "annual_dc_kwh": total_dc,
+            "annual_ac_kwh": total,
+            "dc_kw": dc,
+            "inverter_efficiency": eta,
+            "dc_ac_ratio": self.dc_ac_ratio,
+            "clipping_loss_kwh": total_dc * eta - total,
             "capacity_factor": cf,
             "specific_yield_kwh_kwp": (
                 total / self.capacity_kwp if self.capacity_kwp else 0.0
@@ -269,7 +302,7 @@ class PVArray(NonDispatchable):
             "components_estimated": estimated_components,
             "clipped_hours": clipped_hours,
         }
-        return dc, info
+        return ac, info
 
     def _tracked_orientation(self, tilt, az, zenith, azimuth):
         """Surface orientation for the configured tracking mode."""

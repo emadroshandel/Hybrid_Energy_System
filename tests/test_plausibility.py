@@ -1024,9 +1024,11 @@ class TestInterfaceScriptIsInternallyConsistent(unittest.TestCase):
         self.assertIn('id="project-open"', html,
                       "the example projects cannot be opened without the "
                       "file control that reads them")
-        self.assertIn('for="project-open"', html,
-                      "the file input is hidden; without its label there is "
-                      "nothing to click")
+        # The hidden input is opened by a real <button> (keyboard reachable);
+        # a <label for> styled as a button could not take focus.
+        self.assertTrue('id="btn-open"' in html or 'for="project-open"' in html,
+                        "the file input is hidden; without a button or label "
+                        "there is nothing to click")
 
 
 class TestWorkedExamplesAreLoadable(unittest.TestCase):
